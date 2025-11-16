@@ -728,80 +728,49 @@ const handlePDAUpload = async (event) => {
     reader.onloadend = async () => {
       const base64 = reader.result;
       
-      console.log("Sending PDA list to server for processing...");
+      console.log("Sending PDA list + photo data to server for processing...");
 
-      // Send to SERVER for PDA list extraction
+      // Prepare photo data to send to server
+      const photoDataForServer = capturedPhotos.map(photoSet => ({
+        photoSetId: photoSet.id,
+        extractedData: photoSet.extractedData,
+        labelPhoto: photoSet.label?.data,
+        labelPreview: photoSet.label?.preview,
+        parcelPhoto: photoSet.parcel?.data,
+        parcelPreview: photoSet.parcel?.preview,
+        originalPhotos: photoSet,
+        ocrText: photoSet.ocrText,
+        ocrConfidence: photoSet.ocrConfidence
+      }));
+
+      console.log(`Sending ${photoDataForServer.length} photos to server for matching`);
+
+      // Send to SERVER for PDA list extraction WITH PHOTO DATA
       const response = await fetch('/api/process-orders', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          imageBase64: base64 
+          imageBase64: base64,
+          photoData: photoDataForServer // ✅ NOW sending photo data
         }),
       });
 
       const data = await response.json();
       
       if (data.success) {
-        console.log(`Server extracted ${data.deliveries.length} deliveries from PDA list`);
+        console.log(`Server extracted ${data.deliveries.length} deliveries, ${data.matchedCount} with photos`);
         
-        // Step 2: Match PDA data with photo data using name similarity
-        const matchedDeliveries = data.deliveries.map(pdaDelivery => {
-          // Find matching photo data using name similarity (80% match)
-          const matchingPhoto = capturedPhotos.find(photoSet => {
-            const extracted = photoSet.extractedData;
-            if (!extracted || !extracted.clientName) return false;
-
-            // Convert both names to lowercase for comparison
-            const photoName = extracted.clientName.toLowerCase().trim();
-            const pdaName = pdaDelivery.clientName.toLowerCase().trim();
-            
-            // Calculate name similarity
-            const similarity = calculateNameSimilarity(photoName, pdaName);
-            
-            console.log(`Name matching: "${photoName}" vs "${pdaName}" - Similarity: ${similarity}%`);
-            
-            // Match if similarity is 80% or higher
-            return similarity >= 80;
-          });
-
-          if (matchingPhoto) {
-            // Merge PDA data with PHOTO data
-            return {
-              ...pdaDelivery, // PDA system data from SERVER
-              // PHOTO DATA - Always include
-              photoSetId: matchingPhoto.photoSetId,
-              labelPhoto: matchingPhoto.labelPhoto,
-              labelPreview: matchingPhoto.labelPreview,
-              parcelPhoto: matchingPhoto.parcelPhoto,
-              parcelPreview: matchingPhoto.parcelPreview,
-              originalPhotos: matchingPhoto.originalPhotos,
-              ocrText: matchingPhoto.ocrText,
-              ocrConfidence: matchingPhoto.ocrConfidence,
-              source: 'photo-enhanced',
-              matchConfidence: calculateNameSimilarity(
-                matchingPhoto.extractedData.clientName.toLowerCase().trim(),
-                pdaDelivery.clientName.toLowerCase().trim()
-              )
-            };
-          }
-
-          // Return original PDA data if no photo match found
-          return {
-            ...pdaDelivery,
-            source: 'pda-only'
-          };
-        });
-
-        // Count matches for alert
-        const matchedCount = matchedDeliveries.filter(d => d.source === 'photo-enhanced').length;
-        const totalCount = matchedDeliveries.length;
+        // Set the deliveries directly (server already did the matching)
+        setDeliveries(data.deliveries);
         
-        setDeliveries(matchedDeliveries);
-        alert(`✅ SERVER processed PDA list: ${data.extractedCount} orders found! Matched ${matchedCount}/${totalCount} with photos. Now geocoding addresses...`);
+        // Count how many deliveries have photos
+        const deliveriesWithPhotos = data.deliveries.filter(d => d.labelPhoto).length;
         
-        await geocodeAddresses(matchedDeliveries);
+        alert(`✅ SERVER: Processed ${data.extractedCount} orders, ${data.matchedCount} matched with photos! ${deliveriesWithPhotos} stops will show photos. Now geocoding addresses...`);
+        
+        await geocodeAddresses(data.deliveries);
       } else {
         alert('❌ SERVER PDA Processing Error: ' + data.error);
         setCurrentStep('upload'); // Stay on upload step to retry
@@ -839,19 +808,19 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
     const data = await response.json();
     
     if (data.success) {
-      // Preserve ALL photo data when setting geocoded deliveries
+      // PRESERVE ALL PHOTO DATA when setting geocoded deliveries
       const deliveriesWithPhotos = data.deliveries.map((delivery, index) => {
         const originalDelivery = deliveriesToGeocode[index];
         return {
           ...delivery, // Geocoded data (lat, lng, etc.)
-          // Preserve ALL original data including photos
+          // PRESERVE ALL original data including photos
           clientName: originalDelivery.clientName,
           address: originalDelivery.address,
           phoneNumber: originalDelivery.phoneNumber,
           barcode: originalDelivery.barcode,
           sender: originalDelivery.sender,
           weight: originalDelivery.weight,
-          // PHOTO DATA - Always preserve
+          // PRESERVE PHOTO DATA
           photoSetId: originalDelivery.photoSetId,
           labelPhoto: originalDelivery.labelPhoto,
           labelPreview: originalDelivery.labelPreview,
@@ -868,7 +837,9 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       setGeocodedDeliveries(deliveriesWithPhotos);
       
       const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
-      alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! Now optimizing route...`);
+      const photosCount = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
+      
+      alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! ${photosCount} stops have photos. Now optimizing route...`);
       
       await optimizeRoute(deliveriesWithPhotos);
     } else {
@@ -907,15 +878,15 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       const routeWithPhotos = data.route.map((stop, index) => {
         const originalDelivery = deliveriesWithCoords[index];
         return {
-          ...stop, // Optimized route data (stopNumber, distance, etc.)
-          // Preserve ALL original data including photos
+          ...stop, // Optimized route data
+          // PRESERVE ALL original data including photos
           clientName: originalDelivery.clientName,
           address: originalDelivery.address,
           phoneNumber: originalDelivery.phoneNumber,
           barcode: originalDelivery.barcode,
           sender: originalDelivery.sender,
           weight: originalDelivery.weight,
-          // PHOTO DATA - Always preserve
+          // PRESERVE PHOTO DATA
           photoSetId: originalDelivery.photoSetId,
           labelPhoto: originalDelivery.labelPhoto,
           labelPreview: originalDelivery.labelPreview,
@@ -931,7 +902,9 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       
       setOptimizedRoute(routeWithPhotos);
       setCurrentStep('complete');
-      alert('✅ Route optimized successfully! Photos are now visible in all stops.');
+      
+      const photosCount = routeWithPhotos.filter(stop => stop.labelPhoto).length;
+      alert(`✅ Route optimized successfully! ${photosCount}/${routeWithPhotos.length} stops have photos visible.`);
     } else {
       alert('❌ Optimization error: ' + data.error);
     }
