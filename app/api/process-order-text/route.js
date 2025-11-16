@@ -1,4 +1,3 @@
-// app/api/process-order-text/route.js
 import { NextResponse } from 'next/server';
 
 export async function POST(request) {
@@ -9,12 +8,11 @@ export async function POST(request) {
       return NextResponse.json({ 
         success: false, 
         error: 'No OCR text provided' 
-      });
+      }, { status: 400 });
     }
 
-    console.log("Processing OCR text with OpenAI:", ocrText);
+    console.log("Processing OCR text with OpenAI:", ocrText.substring(0, 100) + "...");
 
-    // Send extracted text to OpenAI for structured processing
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -26,13 +24,16 @@ export async function POST(request) {
         messages: [
           {
             role: "system",
-            content: `You are an expert at parsing delivery label information. Extract the delivery details from the provided OCR text and return ONLY a JSON object with: clientName, address, phoneNumber, barcode, sender, weight. If any field is not found, return null for that field.
+            content: `You are an expert at parsing Spanish delivery label information. Extract the delivery details from the provided OCR text and return ONLY a JSON object with: clientName, address, phoneNumber, barcode, sender, weight. 
 
-IMPORTANT: Focus on Spanish/European address formats. Look for patterns like:
-- POL IND (Industrial Park)
-- CP (Postal Code) 
-- Spanish phone numbers (9 digits)
-- Barcodes and reference numbers
+IMPORTANT RULES:
+- If any field is not found, return null for that field
+- Focus on Spanish/European address formats
+- Look for POL IND (Industrial Park), CP (Postal Code)
+- Spanish phone numbers are 9 digits
+- Clean and normalize all text
+
+CRITICAL: Return ONLY the JSON object, no other text.
 
 Example output:
 {
@@ -50,7 +51,8 @@ Example output:
           }
         ],
         max_tokens: 1000,
-        temperature: 0.1
+        temperature: 0.1,
+        response_format: { type: "json_object" }
       }),
     });
 
@@ -62,20 +64,37 @@ Example output:
     const data = await response.json();
     const content = data.choices[0].message.content;
     
-    const jsonMatch = content.match(/\{.*\}/s);
-    if (jsonMatch) {
-      const delivery = JSON.parse(jsonMatch[0]);
-      console.log("Structured delivery data:", delivery);
+    console.log("OpenAI Response:", content);
+
+    try {
+      const delivery = JSON.parse(content);
       
+      // Validate the response has at least some data
+      const hasValidData = Object.values(delivery).some(value => 
+        value && value !== null && value !== 'null'
+      );
+
+      if (!hasValidData) {
+        return NextResponse.json({ 
+          success: false, 
+          error: "No valid delivery data extracted",
+          ocrText: ocrText
+        });
+      }
+
       return NextResponse.json({ 
         success: true, 
-        delivery
+        delivery,
+        ocrText: ocrText // Include for reference
       });
-    } else {
+
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
       return NextResponse.json({ 
         success: false, 
-        error: "No structured data found",
-        raw: content 
+        error: "Invalid JSON response from AI",
+        rawResponse: content,
+        ocrText: ocrText
       });
     }
 
@@ -84,6 +103,6 @@ Example output:
     return NextResponse.json({ 
       success: false, 
       error: error.message 
-    });
+    }, { status: 500 });
   }
 }

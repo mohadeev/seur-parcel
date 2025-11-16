@@ -1,11 +1,12 @@
 // app/api/process-order-photos/route.js
 import { NextResponse } from 'next/server';
+import Tesseract from 'tesseract.js';
 
 export async function POST(request) {
   try {
-    const { pdaDeliveries, photoData, matchingInstruction, labelPhoto, parcelPhoto } = await request.json();
+    const { labelPhoto, parcelPhoto, pdaDeliveries, photoData } = await request.json();
 
-    // If we have PDA data and photo data, do matching
+    // If we have PDA data and photo data, do matching (existing functionality)
     if (pdaDeliveries && photoData) {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -16,16 +17,13 @@ export async function POST(request) {
         body: JSON.stringify({
           model: "gpt-4o",
           messages: [
-            // In the API route, update the system prompt for matching:
-{
-  role: "system",
-  content: `You are an expert at matching delivery data. You will receive:
+            {
+              role: "system",
+              content: `You are an expert at matching delivery data. You will receive:
 1. PDA delivery list (from the system)
 2. Photo-extracted data (from label photos)
 
 Your task: Match each PDA delivery with its corresponding photo data and return a combined JSON array.
-
-CRITICAL: You MUST include the full photo data (labelPhoto, labelPreview, parcelPhoto, parcelPreview) for matched deliveries.
 
 Return format:
 [
@@ -33,32 +31,29 @@ Return format:
     "clientName": "from PDA",
     "address": "from PDA", 
     "phoneNumber": "from PDA",
-    "barcode": "from PDA", 
+    "barcode": "from PDA",
     "sender": "from PDA",
     "weight": "from PDA",
-    // PHOTO DATA - INCLUDE THESE FOR MATCHED DELIVERIES
-    "photoSetId": "from photo data",
-    "labelPhoto": "from photo data", 
-    "labelPreview": "from photo data",
-    "parcelPhoto": "from photo data",
-    "parcelPreview": "from photo data",
-    "ocrText": "from photo data",
-    "ocrConfidence": "from photo data",
+    "photoSetId": "from photo data if matched",
+    "labelPhoto": "from photo data if matched",
+    "labelPreview": "from photo data if matched", 
+    "parcelPhoto": "from photo data if matched",
+    "parcelPreview": "from photo data if matched",
     "matchConfidence": "high/medium/low",
     "source": "photo-matched/pda-only"
   }
 ]
 
-IMPORTANT: Copy the exact photo data values from the photoData input. Do not modify them.`
-},
-   {
-  role: "user",
-  content: `PDA Deliveries: ${JSON.stringify(pdaDeliveries, null, 2)}
+Match based on: client name, address, phone number, barcode. Use fuzzy matching for names.`
+            },
+            {
+              role: "user",
+              content: `PDA Deliveries: ${JSON.stringify(pdaDeliveries, null, 2)}
 
-Photo Data (include ALL photo fields in your response): ${JSON.stringify(photoData, null, 2)}
+Photo Data: ${JSON.stringify(photoData, null, 2)}
 
-Match the deliveries and return the combined JSON array with ALL photo data included.`
-}
+Please match and combine these datasets. Return ONLY the JSON array.`
+            }
           ],
           max_tokens: 4000,
           temperature: 0.1
@@ -89,7 +84,103 @@ Match the deliveries and return the combined JSON array with ALL photo data incl
       }
     }
 
-    // Original photo processing functionality (for backward compatibility)
+    // SERVER-SIDE OCR PROCESSING (NEW)
+    if (labelPhoto) {
+      console.log("Starting server-side OCR processing...");
+      
+      // Extract text from image using Tesseract.js on the server
+      const { data: { text, confidence } } = await Tesseract.recognize(
+        labelPhoto,
+        'eng+spa',
+        { 
+          logger: progress => {
+            if (progress.status === 'recognizing text') {
+              console.log(`Server OCR Progress: ${Math.round(progress.progress * 100)}%`);
+            }
+          }
+        }
+      );
+
+      console.log("Server OCR extracted text:", text);
+      console.log("Server OCR confidence:", confidence);
+
+      if (!text || text.trim().length < 10) {
+        return NextResponse.json({ 
+          success: false, 
+          error: 'No readable text found in image' 
+        });
+      }
+
+      // Send extracted text to OpenAI for structured processing
+      const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert at parsing delivery label information. Extract the delivery details from the provided OCR text and return ONLY a JSON object with: clientName, address, phoneNumber, barcode, sender, weight. If any field is not found, return null for that field.
+
+IMPORTANT: Focus on Spanish/European address formats. Look for patterns like:
+- POL IND (Industrial Park)
+- CP (Postal Code) 
+- Spanish phone numbers (9 digits)
+- Barcodes and reference numbers
+
+Example output:
+{
+  "clientName": "ZABALA SL DESGUACES",
+  "address": "POL IND BEOTIBAR 18, 20491 BELAUNTZA",
+  "phoneNumber": "943671790",
+  "barcode": "0002482951",
+  "sender": "NORAUTO ESPANA",
+  "weight": "54.47 Kgs"
+}`
+            },
+            {
+              role: "user",
+              content: `Extract delivery information from this OCR text: ${text}`
+            }
+          ],
+          max_tokens: 1000,
+          temperature: 0.1
+        }),
+      });
+
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json();
+        throw new Error(errorData.error?.message || 'OpenAI API error');
+      }
+
+      const openaiData = await openaiResponse.json();
+      const content = openaiData.choices[0].message.content;
+      
+      const jsonMatch = content.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const delivery = JSON.parse(jsonMatch[0]);
+        console.log("Structured delivery data:", delivery);
+        
+        return NextResponse.json({ 
+          success: true, 
+          delivery,
+          ocrText: text,
+          ocrConfidence: confidence
+        });
+      } else {
+        return NextResponse.json({ 
+          success: false, 
+          error: "No structured data found",
+          ocrText: text,
+          raw: content 
+        });
+      }
+    }
+
+    // Original image processing functionality (for backward compatibility)
     if (labelPhoto && parcelPhoto) {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',

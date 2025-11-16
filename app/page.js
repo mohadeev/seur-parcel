@@ -242,6 +242,7 @@ useEffect(() => {
 
   loadData();
 }, [dbReady, routeId, optimizedRoute.length]); // Added optimizedRoute.length dependency
+
   // Save photos to IndexedDB
   useEffect(() => {
     if (!dbReady) return;
@@ -437,6 +438,8 @@ useEffect(() => {
 // In your processCapturedPhotos function, update to use client-side OCR:
 
 // Process captured photos with FREE Client-side OCR + OpenAI
+// Process captured photos with SERVER-SIDE OCR + OpenAI
+// Process captured photos with CLIENT-SIDE OCR + Server AI
 const processCapturedPhotos = async () => {
   if (capturedPhotos.length === 0) return;
 
@@ -447,78 +450,93 @@ const processCapturedPhotos = async () => {
     const processedOrders = [];
     const extractedDataFromPhotos = [];
 
-    // Dynamically import the OCR utility (client-side only)
-    const { ClientSideOCR } = await import('../lib/ocr');
+    // Dynamically import Tesseract for client-side only
+    const Tesseract = (await import('tesseract.js')).default;
 
-    // Step 1: Extract text from images using FREE Client-side OCR
+    // Process each photo set with CLIENT-SIDE OCR
     for (const photoSet of capturedPhotos) {
       if (photoSet.processed) continue;
 
       console.log("Processing photo set:", photoSet.id);
 
       try {
-        // Use FREE client-side OCR to extract text
-        const ocrResult = await ClientSideOCR.extractTextFromImage(photoSet.label.data);
+        // STEP 1: Client-side OCR text extraction
+        console.log("Starting client-side OCR...");
         
-        console.log("OCR extracted text:", ocrResult.text);
+        const { data: { text, confidence } } = await Tesseract.recognize(
+          photoSet.label.data,
+          'eng+spa',
+          {
+            logger: progress => {
+              if (progress.status === 'recognizing text') {
+                console.log(`Client OCR Progress: ${Math.round(progress.progress * 100)}%`);
+              }
+            }
+          }
+        );
 
-        if (!ocrResult.text || ocrResult.text.trim().length < 10) {
+        console.log("Client OCR extracted text:", text);
+        console.log("OCR Confidence:", confidence);
+
+        if (!text || text.trim().length < 10) {
           throw new Error('No readable text found in image');
         }
 
-        // Step 2: Send extracted text to OpenAI for structured processing
-        const response = await fetch('/api/process-order-text', {
+        // STEP 2: Send extracted text to our server for AI processing
+        const aiResponse = await fetch('/api/process-order-text', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ 
-            ocrText: ocrResult.text
+            ocrText: text
           }),
         });
 
-        const data = await response.json();
+        const aiData = await aiResponse.json();
         
-        if (data.success && data.delivery) {
-          console.log("OCR + AI extracted data:", data.delivery);
+        if (aiData.success && aiData.delivery) {
+          console.log("AI extracted data:", aiData.delivery);
           
-          // Store extracted data from FREE OCR + AI
+          // Store extracted data
           extractedDataFromPhotos.push({
             photoSetId: photoSet.id,
-            extractedData: data.delivery,
+            extractedData: aiData.delivery,
             labelPhoto: photoSet.label.data,
             labelPreview: photoSet.label.preview,
             parcelPhoto: photoSet.parcel.data,
             parcelPreview: photoSet.parcel.preview,
             originalPhotos: photoSet,
-            ocrText: ocrResult.text, // Store OCR text for reference
-            ocrConfidence: ocrResult.confidence
+            ocrText: text,
+            ocrConfidence: confidence,
+            clientOcr: true // Flag to indicate client-side processing
           });
 
           // Mark as processed with extracted data
           const updatedPhotoSet = {
             ...photoSet,
-            extractedData: data.delivery,
-            ocrText: ocrResult.text,
-            ocrConfidence: ocrResult.confidence,
-            processed: true
+            extractedData: aiData.delivery,
+            ocrText: text,
+            ocrConfidence: confidence,
+            processed: true,
+            clientOcr: true
           };
           
           setCapturedPhotos(prev => 
             prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
           );
         } else {
-          throw new Error(data.error || 'OpenAI processing failed');
+          throw new Error(aiData.error || 'AI processing failed');
         }
 
       } catch (error) {
-        console.error("OCR + AI processing failed:", error);
+        console.error("Client OCR + AI processing failed:", error);
         // Mark as processed but failed
         const updatedPhotoSet = {
           ...photoSet,
           processed: true,
           error: error.message,
-          ocrText: error.ocrText || 'OCR failed'
+          clientOcr: true
         };
         setCapturedPhotos(prev => 
           prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
@@ -526,11 +544,10 @@ const processCapturedPhotos = async () => {
       }
     }
 
-    // Step 3: After processing, move to PDA upload to match with system data
+    // Continue with the rest of your processing logic...
     if (extractedDataFromPhotos.length > 0) {
       const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
       
-      // Store the extracted photo data for later matching
       setDeliveries(successfulExtractions.map(item => ({
         ...item.extractedData,
         photoSetId: item.photoSetId,
@@ -541,14 +558,15 @@ const processCapturedPhotos = async () => {
         originalPhotos: item.originalPhotos,
         ocrText: item.ocrText,
         ocrConfidence: item.ocrConfidence,
-        source: 'ocr-ai-photo-temp'
+        clientOcr: true,
+        source: 'client-ocr-ai-photo-temp'
       })));
       
-      alert(`✅ FREE Client-side OCR + AI processed ${successfulExtractions.length} orders from photos! Now upload PDA list to match with system data.`);
-      setCurrentStep('upload'); // Move to PDA upload step
+      alert(`✅ CLIENT-SIDE OCR + AI processed ${successfulExtractions.length} orders! Now upload PDA list.`);
+      setCurrentStep('upload');
       
     } else {
-      alert('❌ No data could be extracted from photos using FREE OCR + AI');
+      alert('❌ No data could be extracted from photos');
       setCurrentStep('photo-capture');
     }
 
@@ -697,6 +715,7 @@ const levenshteinDistance = (str1, str2) => {
 
   // Handle PDA/list upload and match with photos
  // Handle PDA/list upload and match with photos
+// Handle PDA/list upload - SERVER-SIDE processing
 const handlePDAUpload = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -709,8 +728,10 @@ const handlePDAUpload = async (event) => {
     reader.onloadend = async () => {
       const base64 = reader.result;
       
-      // First, get PDA data from the image
-      const pdaResponse = await fetch('/api/process-orders', {
+      console.log("Sending PDA list to server for processing...");
+
+      // Send to SERVER for PDA list extraction
+      const response = await fetch('/api/process-orders', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -720,82 +741,79 @@ const handlePDAUpload = async (event) => {
         }),
       });
 
-      const pdaData = await pdaResponse.json();
+      const data = await response.json();
       
-      if (pdaData.success) {
-        // Prepare photo data for OpenAI matching
-        const photoDataForMatching = capturedPhotos
-          .filter(photoSet => photoSet.extractedData)
-          .map(photoSet => ({
-            photoSetId: photoSet.id,
-            extractedData: photoSet.extractedData,
-            labelPhoto: photoSet.labelPhoto,
-            labelPreview: photoSet.labelPreview,
-            parcelPhoto: photoSet.parcelPhoto,
-            parcelPreview: photoSet.parcelPreview
-          }));
+      if (data.success) {
+        console.log(`Server extracted ${data.deliveries.length} deliveries from PDA list`);
+        
+        // Step 2: Match PDA data with photo data using name similarity
+        const matchedDeliveries = data.deliveries.map(pdaDelivery => {
+          // Find matching photo data using name similarity (80% match)
+          const matchingPhoto = capturedPhotos.find(photoSet => {
+            const extracted = photoSet.extractedData;
+            if (!extracted || !extracted.clientName) return false;
 
-        // Send both PDA data and photo data to OpenAI for matching
-        const matchResponse = await fetch('/api/process-order-photos', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            pdaDeliveries: pdaData.deliveries,
-            photoData: photoDataForMatching,
-            matchingInstruction: "Match the PDA delivery list with the photo-extracted data. Return a combined list where each PDA delivery is matched with its corresponding photo data based on client name, address, phone number, or barcode. Include the photo data in the matched deliveries."
-          }),
+            // Convert both names to lowercase for comparison
+            const photoName = extracted.clientName.toLowerCase().trim();
+            const pdaName = pdaDelivery.clientName.toLowerCase().trim();
+            
+            // Calculate name similarity
+            const similarity = calculateNameSimilarity(photoName, pdaName);
+            
+            console.log(`Name matching: "${photoName}" vs "${pdaName}" - Similarity: ${similarity}%`);
+            
+            // Match if similarity is 80% or higher
+            return similarity >= 80;
+          });
+
+          if (matchingPhoto) {
+            // Merge PDA data with PHOTO data
+            return {
+              ...pdaDelivery, // PDA system data from SERVER
+              // PHOTO DATA - Always include
+              photoSetId: matchingPhoto.photoSetId,
+              labelPhoto: matchingPhoto.labelPhoto,
+              labelPreview: matchingPhoto.labelPreview,
+              parcelPhoto: matchingPhoto.parcelPhoto,
+              parcelPreview: matchingPhoto.parcelPreview,
+              originalPhotos: matchingPhoto.originalPhotos,
+              ocrText: matchingPhoto.ocrText,
+              ocrConfidence: matchingPhoto.ocrConfidence,
+              source: 'photo-enhanced',
+              matchConfidence: calculateNameSimilarity(
+                matchingPhoto.extractedData.clientName.toLowerCase().trim(),
+                pdaDelivery.clientName.toLowerCase().trim()
+              )
+            };
+          }
+
+          // Return original PDA data if no photo match found
+          return {
+            ...pdaDelivery,
+            source: 'pda-only'
+          };
         });
 
-        const matchData = await matchResponse.json();
+        // Count matches for alert
+        const matchedCount = matchedDeliveries.filter(d => d.source === 'photo-enhanced').length;
+        const totalCount = matchedDeliveries.length;
         
-       // In handlePDAUpload, after getting the matched data:
-if (matchData.success && matchData.combinedDeliveries) {
-  // Ensure photos are properly attached
-  const deliveriesWithPhotos = matchData.combinedDeliveries.map(delivery => {
-    if (delivery.photoSetId) {
-      // Find the original photo set to get the full photo data
-      const originalPhotoSet = capturedPhotos.find(photo => photo.id === delivery.photoSetId);
-      if (originalPhotoSet) {
-        return {
-          ...delivery,
-          // Ensure all photo fields are included
-          labelPhoto: originalPhotoSet.labelPhoto,
-          labelPreview: originalPhotoSet.labelPreview,
-          parcelPhoto: originalPhotoSet.parcelPhoto,
-          parcelPreview: originalPhotoSet.parcelPreview,
-          originalPhotos: originalPhotoSet.originalPhotos,
-          ocrText: originalPhotoSet.ocrText,
-          ocrConfidence: originalPhotoSet.ocrConfidence
-        };
-      }
-    }
-    return delivery;
-  });
-
-  console.log("Final deliveries with photos:", deliveriesWithPhotos);
-  
-  setDeliveries(deliveriesWithPhotos);
-  
-  const matchedCount = deliveriesWithPhotos.filter(d => d.photoSetId).length;
-  const totalCount = deliveriesWithPhotos.length;
-  
-  alert(`✅ OpenAI matched ${matchedCount}/${totalCount} orders with photos! Now geocoding addresses...`);
-  
-  await geocodeAddresses(deliveriesWithPhotos);
-} else {
-          alert('❌ Matching error: ' + (matchData.error || 'Unable to match data'));
-        }
+        setDeliveries(matchedDeliveries);
+        alert(`✅ SERVER processed PDA list: ${data.extractedCount} orders found! Matched ${matchedCount}/${totalCount} with photos. Now geocoding addresses...`);
+        
+        await geocodeAddresses(matchedDeliveries);
       } else {
-        alert('❌ PDA processing error: ' + pdaData.error);
+        alert('❌ SERVER PDA Processing Error: ' + data.error);
+        setCurrentStep('upload'); // Stay on upload step to retry
       }
     };
     
     reader.readAsDataURL(file);
     
   } catch (error) {
-    alert('Error: ' + error.message);
+    console.error('PDA Upload error:', error);
+    alert('Error uploading PDA list: ' + error.message);
+    setCurrentStep('upload');
   } finally {
     setProcessing(false);
   }
@@ -969,22 +987,7 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       }
     );
   };
-// Add this useEffect to debug photo data
-useEffect(() => {
-  if (optimizedRoute.length > 0) {
-    console.log("Optimized Route with Photos:", optimizedRoute);
-    optimizedRoute.forEach((stop, index) => {
-      console.log(`Stop ${index}:`, {
-        clientName: stop.clientName,
-        hasLabelPhoto: !!stop.labelPhoto,
-        hasLabelPreview: !!stop.labelPreview,
-        hasParcelPhoto: !!stop.parcelPhoto,
-        hasParcelPreview: !!stop.parcelPreview,
-        source: stop.source
-      });
-    });
-  }
-}, [optimizedRoute]);
+
   // Open Google Maps with directions
   const openGoogleMapsDirections = (delivery) => {
     if (!userLocation) {
@@ -1071,22 +1074,6 @@ const getStepStatus = (step) => {
   const removePhotoSet = (photoSetId) => {
     setCapturedPhotos(prev => prev.filter(photoSet => photoSet.id !== photoSetId));
   };
-
-  // Add this useEffect to debug the final optimized route
-useEffect(() => {
-  if (optimizedRoute.length > 0) {
-    console.log("=== FINAL OPTIMIZED ROUTE DEBUG ===");
-    optimizedRoute.forEach((stop, index) => {
-      console.log(`Stop ${index + 1}: ${stop.clientName}`, {
-        hasLabelPreview: !!stop.labelPreview,
-        hasParcelPreview: !!stop.parcelPreview,
-        labelPreview: stop.labelPreview ? "EXISTS" : "MISSING",
-        parcelPreview: stop.parcelPreview ? "EXISTS" : "MISSING",
-        source: stop.source
-      });
-    });
-  }
-}, [optimizedRoute]);
 
   return (
     <main className="min-h-screen bg-white text-gray-900">
@@ -1604,16 +1591,24 @@ useEffect(() => {
               </div>
             )}
             
-            {processing && currentStep === 'upload' && (
-              <div className="mt-3 md:mt-4 p-3 bg-gray-50 rounded-lg text-center">
-                <div className="flex items-center justify-center space-x-2">
-                  <div className="w-3 h-3 bg-black rounded-full animate-pulse"></div>
-                  <div className="text-xs md:text-sm text-gray-600">
-                    Matching {capturedPhotos.length} photos with PDA list...
-                  </div>
-                </div>
-              </div>
-            )}
+{processing && currentStep === 'upload' && (
+  <div className="mb-4 md:mb-6 p-3 md:p-4 bg-purple-50 rounded-lg border border-purple-200">
+    <div className="flex items-center justify-between">
+      <div className="flex items-center space-x-2 md:space-x-3">
+        <div className="w-2 h-2 md:w-3 md:h-3 bg-purple-500 rounded-full animate-pulse"></div>
+        <div className="text-purple-900 text-sm md:text-base">
+          🖥️ SERVER processing PDA list...
+        </div>
+      </div>
+      <div className="text-xs md:text-sm text-purple-700">
+        Server-side extraction
+      </div>
+    </div>
+    <div className="mt-2 text-xs text-purple-600">
+      Using FREE OCR + AI on server to extract delivery data
+    </div>
+  </div>
+)}
           </div>
         )}
 
@@ -1726,39 +1721,33 @@ useEffect(() => {
             </div>
 
             {/* ALWAYS Show photo previews - Remove the clickedStop condition */}
-          {/* ALWAYS Show photo previews */}
-{(stop.labelPreview || stop.parcelPreview) ? (
-  <div className="mb-3">
-    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-    <div className="flex space-x-3">
-      {stop.labelPreview && (
-        <div className="text-center">
-          <div className="text-xs text-gray-500 mb-1">Label</div>
-          <img 
-            src={stop.labelPreview} 
-            alt="Label" 
-            className="w-12 h-12 object-cover rounded border shadow-sm"
-          />
-        </div>
-      )}
-      {stop.parcelPreview && (
-        <div className="text-center">
-          <div className="text-xs text-gray-500 mb-1">Parcel</div>
-          <img 
-            src={stop.parcelPreview} 
-            alt="Parcel" 
-            className="w-12 h-12 object-cover rounded border shadow-sm"
-          />
-        </div>
-      )}
-    </div>
-  </div>
-) : (
-  <div className="mb-3">
-    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-    <div className="text-xs text-gray-500 italic">No photos available for this stop</div>
-  </div>
-)}
+            {(stop.labelPreview || stop.parcelPreview) && (
+              <div className="mb-3">
+                <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+                <div className="flex space-x-3">
+                  {stop.labelPreview && (
+                    <div className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">Label</div>
+                      <img 
+                        src={stop.labelPreview} 
+                        alt="Label" 
+                        className="w-12 h-12 object-cover rounded border shadow-sm"
+                      />
+                    </div>
+                  )}
+                  {stop.parcelPreview && (
+                    <div className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">Parcel</div>
+                      <img 
+                        src={stop.parcelPreview} 
+                        alt="Parcel" 
+                        className="w-12 h-12 object-cover rounded border shadow-sm"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
             {clickedStop === index && (
@@ -1925,101 +1914,11 @@ useEffect(() => {
           </div>
         </div>
       )}
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
-<br />
 
       {/* Add padding for mobile bottom nav */}
       {optimizedRoute.length > 0 && (
         <div className="lg:hidden h-20"></div>
       )}
-      {capturedPhotos.map((photoSet)=>(<div> <img 
-                                  src={photoSet.label.preview} 
-                                  alt="Label preview" 
-                                  className="w-12 h-12 object-cover rounded border"
-                                /></div>))}
-      {/* DEBUG SECTION - Always show at the bottom */}
-    <div className="fixed bottom-0 left-0 right-0 bg-yellow-100 border-t-2 border-yellow-400 p-4 z-50">
-      <div className="max-w-6xl mx-auto">
-        <h3 className="text-lg font-bold text-yellow-800 mb-2">DEBUG: Photos in Route</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-          {optimizedRoute.map((stop, index) => (
-            
-            <div key={index} className="bg-white p-2 rounded border border-yellow-300">
-              <div className="text-xs font-semibold text-gray-700 truncate">
-                {index + 1}. {stop.clientName}
-              </div>
-              <div className="flex space-x-1 mt-1">
-                {stop.labelPreview ? (
-                  <img 
-                    src={stop.labelPreview} 
-                    alt="Label" 
-                    className="w-8 h-8 object-cover rounded border"
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-red-100 flex items-center justify-center text-xs text-red-600">❌</div>
-                )}
-                {stop.parcelPreview ? (
-                  <img 
-                    src={stop.parcelPreview} 
-                    alt="Parcel" 
-                    className="w-8 h-8 object-cover rounded border"
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-red-100 flex items-center justify-center text-xs text-red-600">❌</div>
-                )}
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Photos: {stop.labelPreview ? '✓' : '✗'},{stop.parcelPreview ? '✓' : '✗'}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-2 text-xs text-yellow-600">
-          Total stops: {optimizedRoute.length} | 
-          Stops with label photos: {optimizedRoute.filter(s => s.labelPreview).length} |
-          Stops with parcel photos: {optimizedRoute.filter(s => s.parcelPreview).length}
-        </div>
-      </div>
-    </div>
-
     </main>
   );
 }
