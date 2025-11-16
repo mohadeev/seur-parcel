@@ -4,7 +4,7 @@ import Tesseract from 'tesseract.js';
 
 export async function POST(request) {
   try {
-    const { labelPhoto, parcelPhoto, pdaDeliveries, photoData } = await request.json();
+    const { labelPhoto, pdaDeliveries, photoData } = await request.json();
 
     // If we have PDA data and photo data, do matching (existing functionality)
     if (pdaDeliveries && photoData) {
@@ -37,8 +37,6 @@ Return format:
     "photoSetId": "from photo data if matched",
     "labelPhoto": "from photo data if matched",
     "labelPreview": "from photo data if matched", 
-    "parcelPhoto": "from photo data if matched",
-    "parcelPreview": "from photo data if matched",
     "matchConfidence": "high/medium/low",
     "source": "photo-matched/pda-only"
   }
@@ -84,11 +82,9 @@ Please match and combine these datasets. Return ONLY the JSON array.`
       }
     }
 
-    // SERVER-SIDE OCR PROCESSING (NEW)
+    // SERVER-SIDE OCR PROCESSING - LABEL ONLY (NO PARCEL PHOTO)
     if (labelPhoto) {
-      console.log("Starting server-side OCR processing...");
-      
-      // Extract text from image using Tesseract.js on the server
+      // Extract text from LABEL image using Tesseract.js
       const { data: { text, confidence } } = await Tesseract.recognize(
         labelPhoto,
         'eng+spa',
@@ -101,13 +97,10 @@ Please match and combine these datasets. Return ONLY the JSON array.`
         }
       );
 
-      console.log("Server OCR extracted text:", text);
-      console.log("Server OCR confidence:", confidence);
-
       if (!text || text.trim().length < 10) {
         return NextResponse.json({ 
           success: false, 
-          error: 'No readable text found in image' 
+          error: 'No readable text found in label image' 
         });
       }
 
@@ -143,7 +136,7 @@ Example output:
             },
             {
               role: "user",
-              content: `Extract delivery information from this OCR text: ${text}`
+              content: `Extract delivery information from this LABEL OCR text: ${text}`
             }
           ],
           max_tokens: 1000,
@@ -162,7 +155,6 @@ Example output:
       const jsonMatch = content.match(/\{.*\}/s);
       if (jsonMatch) {
         const delivery = JSON.parse(jsonMatch[0]);
-        console.log("Structured delivery data:", delivery);
         
         return NextResponse.json({ 
           success: true, 
@@ -180,63 +172,12 @@ Example output:
       }
     }
 
-    // Original image processing functionality (for backward compatibility)
-    if (labelPhoto && parcelPhoto) {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `Analyze these two photos of a delivery package. The first is a close-up of the shipping label, the second is a wider shot of the parcel. Extract the delivery information and return ONLY a JSON object with: clientName, address, phoneNumber, barcode, sender, weight. Format: {"clientName": "John Doe", "address": "123 Main St", "phoneNumber": "555-0123", "barcode": "123456789", "sender": "Amazon", "weight": "2.5kg"}`
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: labelPhoto,
-                  },
-                },
-                {
-                  type: "image_url", 
-                  image_url: {
-                    url: parcelPhoto,
-                  },
-                },
-              ],
-            },
-          ],
-          max_tokens: 1000,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || 'OpenAI API error');
-      }
-
-      const data = await response.json();
-      const content = data.choices[0].message.content;
-      
-      const jsonMatch = content.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const delivery = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ success: true, delivery });
-      } else {
-        return NextResponse.json({ success: false, error: "No data found", raw: content });
-      }
-    }
+    // REMOVED: Original image processing with both label and parcel photos
+    // Only label photo processing is needed
 
     return NextResponse.json({ 
       success: false, 
-      error: "No valid data provided for processing" 
+      error: "No label photo provided for processing" 
     });
 
   } catch (error) {
