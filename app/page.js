@@ -242,7 +242,6 @@ useEffect(() => {
 
   loadData();
 }, [dbReady, routeId, optimizedRoute.length]); // Added optimizedRoute.length dependency
-
   // Save photos to IndexedDB
   useEffect(() => {
     if (!dbReady) return;
@@ -564,41 +563,33 @@ const processCapturedPhotos = async () => {
 
   // Combine REAL AI photo data with PDA list data
  // Combine REAL AI photo data with PDA list data
+// Combine REAL AI photo data with PDA list data
 const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
   return pdaDeliveries.map(pdaDelivery => {
-    // Find matching photo data using REAL AI extracted data
+    // Find matching photo data using name similarity (80% match)
     const matchingPhoto = photoData.find(photoItem => {
       const extracted = photoItem.extractedData;
       
-      if (!extracted) return false;
+      if (!extracted || !extracted.clientName) return false;
 
-      // Multiple matching strategies with REAL data
-      const matches = [
-        // Match by address (most reliable)
-        extracted.address && pdaDelivery.address && 
-        addressesMatch(extracted.address, pdaDelivery.address),
-        
-        // Match by phone number
-        extracted.phoneNumber && pdaDelivery.phoneNumber &&
-        phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
-        
-        // Match by client name
-        extracted.clientName && pdaDelivery.clientName &&
-        namesMatch(extracted.clientName, pdaDelivery.clientName),
-        
-        // Match by barcode/reference
-        extracted.barcode && pdaDelivery.barcode &&
-        barcodesMatch(extracted.barcode, pdaDelivery.barcode)
-      ];
-
-      return matches.some(match => match === true);
+      // Convert both names to lowercase for comparison
+      const photoName = extracted.clientName.toLowerCase().trim();
+      const pdaName = pdaDelivery.clientName.toLowerCase().trim();
+      
+      // Calculate name similarity
+      const similarity = calculateNameSimilarity(photoName, pdaName);
+      
+      console.log(`Name matching: "${photoName}" vs "${pdaName}" - Similarity: ${similarity}%`);
+      
+      // Match if similarity is 80% or higher
+      return similarity >= 80;
     });
 
     if (matchingPhoto) {
       // Combine PDA data with photo data - ALWAYS include photos
       return {
         ...pdaDelivery, // Keep all PDA data
-        // ALWAYS include photo data even if no AI data extracted
+        // ALWAYS include photo data
         photoSetId: matchingPhoto.photoSetId,
         labelPhoto: matchingPhoto.labelPhoto,
         labelPreview: matchingPhoto.labelPreview,
@@ -616,7 +607,11 @@ const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
           enhancedSender: matchingPhoto.extractedData.sender || pdaDelivery.sender,
           enhancedWeight: matchingPhoto.extractedData.weight || pdaDelivery.weight,
         }),
-        source: 'photo-enhanced'
+        source: 'photo-enhanced',
+        matchConfidence: calculateNameSimilarity(
+          matchingPhoto.extractedData.clientName.toLowerCase().trim(),
+          pdaDelivery.clientName.toLowerCase().trim()
+        )
       };
     }
 
@@ -626,6 +621,56 @@ const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
       source: 'pda-only'
     };
   });
+};
+
+// Add this helper function for name similarity calculation
+const calculateNameSimilarity = (str1, str2) => {
+  // Remove common company suffixes and clean the strings
+  const cleanStr1 = str1.replace(/\b(sl|s|l|sa|s\.a|company|corp|inc|llc)\b/gi, '').trim();
+  const cleanStr2 = str2.replace(/\b(sl|s|l|sa|s\.a|company|corp|inc|llc)\b/gi, '').trim();
+  
+  // If one string contains the other, it's a high match
+  if (cleanStr1.includes(cleanStr2) || cleanStr2.includes(cleanStr1)) {
+    return 100;
+  }
+  
+  // Calculate Levenshtein distance-based similarity
+  const distance = levenshteinDistance(cleanStr1, cleanStr2);
+  const maxLength = Math.max(cleanStr1.length, cleanStr2.length);
+  const similarity = ((maxLength - distance) / maxLength) * 100;
+  
+  return Math.round(similarity);
+};
+
+// Levenshtein distance calculation
+const levenshteinDistance = (str1, str2) => {
+  const matrix = [];
+  
+  // Initialize matrix
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+  
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  // Fill matrix
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+  
+  return matrix[str2.length][str1.length];
 };
   // Helper functions for matching REAL data
   const addressesMatch = (addr1, addr2) => {
@@ -651,52 +696,110 @@ const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
   };
 
   // Handle PDA/list upload and match with photos
-  const handlePDAUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
+ // Handle PDA/list upload and match with photos
+const handlePDAUpload = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
 
-    setProcessing(true);
-    setCurrentStep('upload');
-    
-    try {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64 = reader.result;
-        
-        const response = await fetch('/api/process-orders', {
+  setProcessing(true);
+  setCurrentStep('upload');
+  
+  try {
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64 = reader.result;
+      
+      // First, get PDA data from the image
+      const pdaResponse = await fetch('/api/process-orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          imageBase64: base64 
+        }),
+      });
+
+      const pdaData = await pdaResponse.json();
+      
+      if (pdaData.success) {
+        // Prepare photo data for OpenAI matching
+        const photoDataForMatching = capturedPhotos
+          .filter(photoSet => photoSet.extractedData)
+          .map(photoSet => ({
+            photoSetId: photoSet.id,
+            extractedData: photoSet.extractedData,
+            labelPhoto: photoSet.labelPhoto,
+            labelPreview: photoSet.labelPreview,
+            parcelPhoto: photoSet.parcelPhoto,
+            parcelPreview: photoSet.parcelPreview
+          }));
+
+        // Send both PDA data and photo data to OpenAI for matching
+        const matchResponse = await fetch('/api/process-order-photos', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ 
-            imageBase64: base64 
+            pdaDeliveries: pdaData.deliveries,
+            photoData: photoDataForMatching,
+            matchingInstruction: "Match the PDA delivery list with the photo-extracted data. Return a combined list where each PDA delivery is matched with its corresponding photo data based on client name, address, phone number, or barcode. Include the photo data in the matched deliveries."
           }),
         });
 
-        const data = await response.json();
+        const matchData = await matchResponse.json();
         
-        if (data.success) {
-          // Match PDA data with photo data
-          const matchedDeliveries = combinePhotoDataWithPDA(data.deliveries, capturedPhotos);
-          
-          setDeliveries(matchedDeliveries);
-          alert(`✅ Matched ${capturedPhotos.length} photos with ${data.deliveries.length} PDA orders! Now geocoding addresses...`);
-          
-          await geocodeAddresses(matchedDeliveries);
-        } else {
-          alert('❌ Error: ' + data.error);
-        }
-      };
-      
-      reader.readAsDataURL(file);
-      
-    } catch (error) {
-      alert('Error: ' + error.message);
-    } finally {
-      setProcessing(false);
+       // In handlePDAUpload, after getting the matched data:
+if (matchData.success && matchData.combinedDeliveries) {
+  // Ensure photos are properly attached
+  const deliveriesWithPhotos = matchData.combinedDeliveries.map(delivery => {
+    if (delivery.photoSetId) {
+      // Find the original photo set to get the full photo data
+      const originalPhotoSet = capturedPhotos.find(photo => photo.id === delivery.photoSetId);
+      if (originalPhotoSet) {
+        return {
+          ...delivery,
+          // Ensure all photo fields are included
+          labelPhoto: originalPhotoSet.labelPhoto,
+          labelPreview: originalPhotoSet.labelPreview,
+          parcelPhoto: originalPhotoSet.parcelPhoto,
+          parcelPreview: originalPhotoSet.parcelPreview,
+          originalPhotos: originalPhotoSet.originalPhotos,
+          ocrText: originalPhotoSet.ocrText,
+          ocrConfidence: originalPhotoSet.ocrConfidence
+        };
+      }
     }
-  };
+    return delivery;
+  });
 
+  console.log("Final deliveries with photos:", deliveriesWithPhotos);
+  
+  setDeliveries(deliveriesWithPhotos);
+  
+  const matchedCount = deliveriesWithPhotos.filter(d => d.photoSetId).length;
+  const totalCount = deliveriesWithPhotos.length;
+  
+  alert(`✅ OpenAI matched ${matchedCount}/${totalCount} orders with photos! Now geocoding addresses...`);
+  
+  await geocodeAddresses(deliveriesWithPhotos);
+} else {
+          alert('❌ Matching error: ' + (matchData.error || 'Unable to match data'));
+        }
+      } else {
+        alert('❌ PDA processing error: ' + pdaData.error);
+      }
+    };
+    
+    reader.readAsDataURL(file);
+    
+  } catch (error) {
+    alert('Error: ' + error.message);
+  } finally {
+    setProcessing(false);
+  }
+};
 const geocodeAddresses = async (deliveriesToGeocode) => {
   if (deliveriesToGeocode.length === 0) return;
   
@@ -719,12 +822,30 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
     
     if (data.success) {
       // Preserve ALL photo data when setting geocoded deliveries
-      const deliveriesWithPhotos = data.deliveries.map((delivery, index) => ({
-        ...delivery,
-        // Preserve ALL photo data and properties from original delivery
-        ...deliveriesToGeocode[index], // Include ALL properties including photos
-        source: deliveriesToGeocode[index]?.source || 'geocoded'
-      }));
+      const deliveriesWithPhotos = data.deliveries.map((delivery, index) => {
+        const originalDelivery = deliveriesToGeocode[index];
+        return {
+          ...delivery, // Geocoded data (lat, lng, etc.)
+          // Preserve ALL original data including photos
+          clientName: originalDelivery.clientName,
+          address: originalDelivery.address,
+          phoneNumber: originalDelivery.phoneNumber,
+          barcode: originalDelivery.barcode,
+          sender: originalDelivery.sender,
+          weight: originalDelivery.weight,
+          // PHOTO DATA - Always preserve
+          photoSetId: originalDelivery.photoSetId,
+          labelPhoto: originalDelivery.labelPhoto,
+          labelPreview: originalDelivery.labelPreview,
+          parcelPhoto: originalDelivery.parcelPhoto,
+          parcelPreview: originalDelivery.parcelPreview,
+          originalPhotos: originalDelivery.originalPhotos,
+          ocrText: originalDelivery.ocrText,
+          ocrConfidence: originalDelivery.ocrConfidence,
+          source: originalDelivery.source,
+          matchConfidence: originalDelivery.matchConfidence
+        };
+      });
       
       setGeocodedDeliveries(deliveriesWithPhotos);
       
@@ -765,15 +886,34 @@ const optimizeRoute = async (deliveriesWithCoords) => {
     
     if (data.success) {
       // Ensure ALL photo data is preserved in optimized route
-      const routeWithPhotos = data.route.map((stop, index) => ({
-        ...stop,
-        // Preserve ALL data from original delivery including photos
-        ...deliveriesWithCoords[index]
-      }));
+      const routeWithPhotos = data.route.map((stop, index) => {
+        const originalDelivery = deliveriesWithCoords[index];
+        return {
+          ...stop, // Optimized route data (stopNumber, distance, etc.)
+          // Preserve ALL original data including photos
+          clientName: originalDelivery.clientName,
+          address: originalDelivery.address,
+          phoneNumber: originalDelivery.phoneNumber,
+          barcode: originalDelivery.barcode,
+          sender: originalDelivery.sender,
+          weight: originalDelivery.weight,
+          // PHOTO DATA - Always preserve
+          photoSetId: originalDelivery.photoSetId,
+          labelPhoto: originalDelivery.labelPhoto,
+          labelPreview: originalDelivery.labelPreview,
+          parcelPhoto: originalDelivery.parcelPhoto,
+          parcelPreview: originalDelivery.parcelPreview,
+          originalPhotos: originalDelivery.originalPhotos,
+          ocrText: originalDelivery.ocrText,
+          ocrConfidence: originalDelivery.ocrConfidence,
+          source: originalDelivery.source,
+          matchConfidence: originalDelivery.matchConfidence
+        };
+      });
       
       setOptimizedRoute(routeWithPhotos);
       setCurrentStep('complete');
-      alert('✅ Route optimized successfully!');
+      alert('✅ Route optimized successfully! Photos are now visible in all stops.');
     } else {
       alert('❌ Optimization error: ' + data.error);
     }
@@ -829,7 +969,22 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       }
     );
   };
-
+// Add this useEffect to debug photo data
+useEffect(() => {
+  if (optimizedRoute.length > 0) {
+    console.log("Optimized Route with Photos:", optimizedRoute);
+    optimizedRoute.forEach((stop, index) => {
+      console.log(`Stop ${index}:`, {
+        clientName: stop.clientName,
+        hasLabelPhoto: !!stop.labelPhoto,
+        hasLabelPreview: !!stop.labelPreview,
+        hasParcelPhoto: !!stop.parcelPhoto,
+        hasParcelPreview: !!stop.parcelPreview,
+        source: stop.source
+      });
+    });
+  }
+}, [optimizedRoute]);
   // Open Google Maps with directions
   const openGoogleMapsDirections = (delivery) => {
     if (!userLocation) {
@@ -916,6 +1071,22 @@ const getStepStatus = (step) => {
   const removePhotoSet = (photoSetId) => {
     setCapturedPhotos(prev => prev.filter(photoSet => photoSet.id !== photoSetId));
   };
+
+  // Add this useEffect to debug the final optimized route
+useEffect(() => {
+  if (optimizedRoute.length > 0) {
+    console.log("=== FINAL OPTIMIZED ROUTE DEBUG ===");
+    optimizedRoute.forEach((stop, index) => {
+      console.log(`Stop ${index + 1}: ${stop.clientName}`, {
+        hasLabelPreview: !!stop.labelPreview,
+        hasParcelPreview: !!stop.parcelPreview,
+        labelPreview: stop.labelPreview ? "EXISTS" : "MISSING",
+        parcelPreview: stop.parcelPreview ? "EXISTS" : "MISSING",
+        source: stop.source
+      });
+    });
+  }
+}, [optimizedRoute]);
 
   return (
     <main className="min-h-screen bg-white text-gray-900">
@@ -1555,33 +1726,39 @@ const getStepStatus = (step) => {
             </div>
 
             {/* ALWAYS Show photo previews - Remove the clickedStop condition */}
-            {(stop.labelPreview || stop.parcelPreview) && (
-              <div className="mb-3">
-                <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-                <div className="flex space-x-3">
-                  {stop.labelPreview && (
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Label</div>
-                      <img 
-                        src={stop.labelPreview} 
-                        alt="Label" 
-                        className="w-12 h-12 object-cover rounded border shadow-sm"
-                      />
-                    </div>
-                  )}
-                  {stop.parcelPreview && (
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                      <img 
-                        src={stop.parcelPreview} 
-                        alt="Parcel" 
-                        className="w-12 h-12 object-cover rounded border shadow-sm"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+          {/* ALWAYS Show photo previews */}
+{(stop.labelPreview || stop.parcelPreview) ? (
+  <div className="mb-3">
+    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+    <div className="flex space-x-3">
+      {stop.labelPreview && (
+        <div className="text-center">
+          <div className="text-xs text-gray-500 mb-1">Label</div>
+          <img 
+            src={stop.labelPreview} 
+            alt="Label" 
+            className="w-12 h-12 object-cover rounded border shadow-sm"
+          />
+        </div>
+      )}
+      {stop.parcelPreview && (
+        <div className="text-center">
+          <div className="text-xs text-gray-500 mb-1">Parcel</div>
+          <img 
+            src={stop.parcelPreview} 
+            alt="Parcel" 
+            className="w-12 h-12 object-cover rounded border shadow-sm"
+          />
+        </div>
+      )}
+    </div>
+  </div>
+) : (
+  <div className="mb-3">
+    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+    <div className="text-xs text-gray-500 italic">No photos available for this stop</div>
+  </div>
+)}
 
             {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
             {clickedStop === index && (
@@ -1748,11 +1925,101 @@ const getStepStatus = (step) => {
           </div>
         </div>
       )}
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
+<br />
 
       {/* Add padding for mobile bottom nav */}
       {optimizedRoute.length > 0 && (
         <div className="lg:hidden h-20"></div>
       )}
+      {capturedPhotos.map((photoSet)=>(<div> <img 
+                                  src={photoSet.label.preview} 
+                                  alt="Label preview" 
+                                  className="w-12 h-12 object-cover rounded border"
+                                /></div>))}
+      {/* DEBUG SECTION - Always show at the bottom */}
+    <div className="fixed bottom-0 left-0 right-0 bg-yellow-100 border-t-2 border-yellow-400 p-4 z-50">
+      <div className="max-w-6xl mx-auto">
+        <h3 className="text-lg font-bold text-yellow-800 mb-2">DEBUG: Photos in Route</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+          {optimizedRoute.map((stop, index) => (
+            
+            <div key={index} className="bg-white p-2 rounded border border-yellow-300">
+              <div className="text-xs font-semibold text-gray-700 truncate">
+                {index + 1}. {stop.clientName}
+              </div>
+              <div className="flex space-x-1 mt-1">
+                {stop.labelPreview ? (
+                  <img 
+                    src={stop.labelPreview} 
+                    alt="Label" 
+                    className="w-8 h-8 object-cover rounded border"
+                  />
+                ) : (
+                  <div className="w-8 h-8 bg-red-100 flex items-center justify-center text-xs text-red-600">❌</div>
+                )}
+                {stop.parcelPreview ? (
+                  <img 
+                    src={stop.parcelPreview} 
+                    alt="Parcel" 
+                    className="w-8 h-8 object-cover rounded border"
+                  />
+                ) : (
+                  <div className="w-8 h-8 bg-red-100 flex items-center justify-center text-xs text-red-600">❌</div>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Photos: {stop.labelPreview ? '✓' : '✗'},{stop.parcelPreview ? '✓' : '✗'}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 text-xs text-yellow-600">
+          Total stops: {optimizedRoute.length} | 
+          Stops with label photos: {optimizedRoute.filter(s => s.labelPreview).length} |
+          Stops with parcel photos: {optimizedRoute.filter(s => s.parcelPreview).length}
+        </div>
+      </div>
+    </div>
+
     </main>
   );
 }
