@@ -204,38 +204,44 @@ function HomeContent() {
   }, []);
 
   // Load data from IndexedDB
-  useEffect(() => {
-    if (!dbReady) return;
+// Load data from IndexedDB
+useEffect(() => {
+  if (!dbReady) return;
 
-    const loadData = async () => {
-      try {
-        if (routeId) {
-          const routeToLoad = await seurDB.getRoute(parseInt(routeId));
-          if (routeToLoad) {
-            setDeliveries(routeToLoad.deliveries);
-            setGeocodedDeliveries(routeToLoad.geocodedDeliveries);
-            setOptimizedRoute(routeToLoad.optimizedRoute);
-            if (routeToLoad.photos) {
-              setCapturedPhotos(routeToLoad.photos);
-            }
-            setCurrentStep('complete');
+  const loadData = async () => {
+    try {
+      if (routeId) {
+        const routeToLoad = await seurDB.getRoute(parseInt(routeId));
+        if (routeToLoad) {
+          setDeliveries(routeToLoad.deliveries);
+          setGeocodedDeliveries(routeToLoad.geocodedDeliveries);
+          setOptimizedRoute(routeToLoad.optimizedRoute);
+          if (routeToLoad.photos) {
+            setCapturedPhotos(routeToLoad.photos);
           }
-        } else {
-          // Load current photos
-          const savedPhotos = await seurDB.getPhotos();
-          setCapturedPhotos(savedPhotos);
-          
-          // Load recent routes for dropdown
-          const allRoutes = await seurDB.getAllRoutes();
-          setSavedRoutes(allRoutes);
+          setCurrentStep('complete'); // Force complete step for saved routes
         }
-      } catch (error) {
-        console.error('Error loading data:', error);
-      }
-    };
+      } else {
+        // Load current photos
+        const savedPhotos = await seurDB.getPhotos();
+        setCapturedPhotos(savedPhotos);
+        
+        // Load recent routes for dropdown
+        const allRoutes = await seurDB.getAllRoutes();
+        setSavedRoutes(allRoutes);
 
-    loadData();
-  }, [dbReady, routeId]);
+        // Check if we have optimized route data and set to complete
+        if (optimizedRoute.length > 0) {
+          setCurrentStep('complete');
+        }
+      }
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+  };
+
+  loadData();
+}, [dbReady, routeId, optimizedRoute.length]); // Added optimizedRoute.length dependency
 
   // Save photos to IndexedDB
   useEffect(() => {
@@ -255,95 +261,107 @@ function HomeContent() {
   }, [capturedPhotos, dbReady, routeId]);
 
   // Clear all saved data
-  const clearSavedData = async () => {
-    setDeliveries([]);
-    setGeocodedDeliveries([]);
-    setOptimizedRoute([]);
-    setCurrentStep('photo-capture');
-    setClickedStop(null);
-    setFocusedSegment(null);
-    setCapturedPhotos([]);
-    setCurrentOrderPhotos({ label: null, parcel: null });
-    setPhotoStep('label');
-    
-    if (dbReady) {
-      try {
-        await seurDB.clearAll();
-        const updatedRoutes = await seurDB.getAllRoutes();
-        setSavedRoutes(updatedRoutes);
-      } catch (error) {
-        console.error('Error clearing data:', error);
-      }
+// Clear all saved data - UPDATED
+const clearSavedData = async () => {
+  setDeliveries([]);
+  setGeocodedDeliveries([]);
+  setOptimizedRoute([]);
+  setCurrentStep('photo-capture'); // Reset to first step
+  setClickedStop(null);
+  setFocusedSegment(null);
+  setCapturedPhotos([]);
+  setCurrentOrderPhotos({ label: null, parcel: null });
+  setPhotoStep('label');
+  setActiveTab('route');
+  
+  if (dbReady) {
+    try {
+      await seurDB.clearAll();
+      const updatedRoutes = await seurDB.getAllRoutes();
+      setSavedRoutes(updatedRoutes);
+    } catch (error) {
+      console.error('Error clearing data:', error);
     }
-    
-    router.push('/');
-  };
+  }
+  
+  router.push('/');
+};
 
   // Create new route
-  const createNewRoute = async () => {
-    if (optimizedRoute.length > 0 && !routeId && dbReady) {
-      const routeDate = new Date().toISOString().split('T')[0];
-      const routeTime = new Date().toLocaleTimeString('en-US', { 
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      
-      const newRoute = {
-        id: Date.now(),
-        date: routeDate,
-        time: routeTime,
-        stops: optimizedRoute.length,
-        deliveries: deliveries,
-        geocodedDeliveries: geocodedDeliveries,
-        optimizedRoute: optimizedRoute,
-        photos: capturedPhotos,
-        createdAt: new Date().toISOString()
-      };
-      
-      try {
-        await seurDB.saveRoute(newRoute);
-        const updatedRoutes = await seurDB.getAllRoutes();
-        setSavedRoutes(updatedRoutes);
-      } catch (error) {
-        console.error('Error saving route:', error);
-      }
-    }
+ // Create new route - UPDATED to preserve state
+const createNewRoute = async () => {
+  if (optimizedRoute.length > 0 && !routeId && dbReady) {
+    const routeDate = new Date().toISOString().split('T')[0];
+    const routeTime = new Date().toLocaleTimeString('en-US', { 
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit'
+    });
     
-    // Reset for new route
-    setDeliveries([]);
-    setGeocodedDeliveries([]);
-    setOptimizedRoute([]);
-    setCurrentStep('photo-capture');
-    setClickedStop(null);
-    setFocusedSegment(null);
-    setActiveTab('route');
-    setCapturedPhotos([]);
-    setCurrentOrderPhotos({ label: null, parcel: null });
-    setPhotoStep('label');
-    router.push('/');
-  };
+    const newRoute = {
+      id: Date.now(),
+      date: routeDate,
+      time: routeTime,
+      stops: optimizedRoute.length,
+      deliveries: deliveries,
+      geocodedDeliveries: geocodedDeliveries,
+      optimizedRoute: optimizedRoute,
+      photos: capturedPhotos,
+      currentStep: 'complete', // Save the current step
+      createdAt: new Date().toISOString()
+    };
+    
+    try {
+      await seurDB.saveRoute(newRoute);
+      const updatedRoutes = await seurDB.getAllRoutes();
+      setSavedRoutes(updatedRoutes);
+    } catch (error) {
+      console.error('Error saving route:', error);
+    }
+  }
+  
+  // Reset for new route
+  setDeliveries([]);
+  setGeocodedDeliveries([]);
+  setOptimizedRoute([]);
+  setCurrentStep('photo-capture');
+  setClickedStop(null);
+  setFocusedSegment(null);
+  setActiveTab('route');
+  setCapturedPhotos([]);
+  setCurrentOrderPhotos({ label: null, parcel: null });
+  setPhotoStep('label');
+  router.push('/');
+};
 
   // Load route by ID
-  const loadRoute = async (routeId) => {
-    try {
-      const route = await seurDB.getRoute(routeId);
-      if (route) {
-        setDeliveries(route.deliveries);
-        setGeocodedDeliveries(route.geocodedDeliveries);
-        setOptimizedRoute(route.optimizedRoute);
-        if (route.photos) {
-          setCapturedPhotos(route.photos);
-        }
-        setCurrentStep('complete');
-        router.push(`/?route=${routeId}`);
+  // Load route by ID - UPDATED to restore complete state
+const loadRoute = async (routeId) => {
+  try {
+    const route = await seurDB.getRoute(routeId);
+    if (route) {
+      setDeliveries(route.deliveries);
+      setGeocodedDeliveries(route.geocodedDeliveries);
+      setOptimizedRoute(route.optimizedRoute);
+      if (route.photos) {
+        setCapturedPhotos(route.photos);
       }
-      setShowRoutesList(false);
-    } catch (error) {
-      console.error('Error loading route:', error);
+      setCurrentStep('complete'); // Always set to complete for loaded routes
+      router.push(`/?route=${routeId}`);
     }
-  };
+    setShowRoutesList(false);
+  } catch (error) {
+    console.error('Error loading route:', error);
+  }
+};
 
+
+// Preserve state when we have optimized route but no route ID
+useEffect(() => {
+  if (optimizedRoute.length > 0 && !routeId && currentStep !== 'complete') {
+    setCurrentStep('complete');
+  }
+}, [optimizedRoute.length, routeId, currentStep]);
   // Delete route
   const deleteRoute = async (routeId, event) => {
     event.stopPropagation();
@@ -413,41 +431,59 @@ function HomeContent() {
     reader.readAsDataURL(file);
   };
 
-  // Process captured photos with AI
-  const processCapturedPhotos = async () => {
-    if (capturedPhotos.length === 0) return;
+  // Process captured photos with AI and then request PDA upload
+  // In your processCapturedPhotos function, update the API call:
 
-    setProcessing(true);
-    setCurrentStep('processing-photos');
+// Process captured photos with FREE OCR + OpenAI
+// In your processCapturedPhotos function, update to use client-side OCR:
 
-    try {
-      const processedOrders = [];
-      const extractedDataFromPhotos = [];
+// Process captured photos with FREE Client-side OCR + OpenAI
+const processCapturedPhotos = async () => {
+  if (capturedPhotos.length === 0) return;
 
-      // Step 1: Extract REAL data from all photos using OpenAI
-      for (const photoSet of capturedPhotos) {
-        if (photoSet.processed) continue;
+  setProcessing(true);
+  setCurrentStep('processing-photos');
 
-        console.log("Processing photo set:", photoSet.id);
+  try {
+    const processedOrders = [];
+    const extractedDataFromPhotos = [];
 
-        // Send BOTH photos to OpenAI for data extraction
-        const response = await fetch('/api/process-order-photos', {
+    // Dynamically import the OCR utility (client-side only)
+    const { ClientSideOCR } = await import('../lib/ocr');
+
+    // Step 1: Extract text from images using FREE Client-side OCR
+    for (const photoSet of capturedPhotos) {
+      if (photoSet.processed) continue;
+
+      console.log("Processing photo set:", photoSet.id);
+
+      try {
+        // Use FREE client-side OCR to extract text
+        const ocrResult = await ClientSideOCR.extractTextFromImage(photoSet.label.data);
+        
+        console.log("OCR extracted text:", ocrResult.text);
+
+        if (!ocrResult.text || ocrResult.text.trim().length < 10) {
+          throw new Error('No readable text found in image');
+        }
+
+        // Step 2: Send extracted text to OpenAI for structured processing
+        const response = await fetch('/api/process-order-text', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ 
-            labelPhoto: photoSet.label.data,
-            parcelPhoto: photoSet.parcel.data
+            ocrText: ocrResult.text
           }),
         });
 
         const data = await response.json();
         
         if (data.success && data.delivery) {
-          console.log("AI extracted data:", data.delivery);
+          console.log("OCR + AI extracted data:", data.delivery);
           
-          // Store REAL extracted data from AI
+          // Store extracted data from FREE OCR + AI
           extractedDataFromPhotos.push({
             photoSetId: photoSet.id,
             extractedData: data.delivery,
@@ -455,13 +491,17 @@ function HomeContent() {
             labelPreview: photoSet.label.preview,
             parcelPhoto: photoSet.parcel.data,
             parcelPreview: photoSet.parcel.preview,
-            originalPhotos: photoSet
+            originalPhotos: photoSet,
+            ocrText: ocrResult.text, // Store OCR text for reference
+            ocrConfidence: ocrResult.confidence
           });
 
-          // Mark as processed with REAL data
+          // Mark as processed with extracted data
           const updatedPhotoSet = {
             ...photoSet,
             extractedData: data.delivery,
+            ocrText: ocrResult.text,
+            ocrConfidence: ocrResult.confidence,
             processed: true
           };
           
@@ -469,118 +509,124 @@ function HomeContent() {
             prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
           );
         } else {
-          console.error("AI processing failed:", data.error);
-          // Mark as processed but failed
-          const updatedPhotoSet = {
-            ...photoSet,
-            processed: true,
-            error: data.error
-          };
-          setCapturedPhotos(prev => 
-            prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-          );
+          throw new Error(data.error || 'OpenAI processing failed');
         }
-      }
 
-      // Step 2: Combine with PDA data or use extracted data
-      if (extractedDataFromPhotos.length > 0) {
-        const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
-        
-        if (deliveries.length > 0) {
-          // Combine REAL AI data with existing PDA data
-          const combinedDeliveries = combinePhotoDataWithPDA(deliveries, successfulExtractions);
-          setDeliveries(combinedDeliveries);
-          alert(`✅ Combined ${successfulExtractions.length} AI-processed photos with ${deliveries.length} PDA orders!`);
-          
-          // Auto-proceed to geocoding with combined REAL data
-          await geocodeAddresses(combinedDeliveries);
-        } else {
-          // Use only the REAL AI extracted data
-          const deliveriesFromPhotos = successfulExtractions.map(item => ({
-            ...item.extractedData,
-            photoSetId: item.photoSetId,
-            labelPhoto: item.labelPhoto,
-            labelPreview: item.labelPreview,
-            parcelPhoto: item.parcelPhoto,
-            parcelPreview: item.parcelPreview,
-            originalPhotos: item.originalPhotos,
-            source: 'ai-photo'
-          }));
-          
-          setDeliveries(deliveriesFromPhotos);
-          alert(`✅ Processed ${deliveriesFromPhotos.length} orders using AI photo analysis!`);
-          
-          // Auto-proceed to geocoding with REAL data
-          await geocodeAddresses(deliveriesFromPhotos);
-        }
-      } else {
-        alert('❌ No data could be extracted from photos by AI');
-        setCurrentStep('photo-capture');
+      } catch (error) {
+        console.error("OCR + AI processing failed:", error);
+        // Mark as processed but failed
+        const updatedPhotoSet = {
+          ...photoSet,
+          processed: true,
+          error: error.message,
+          ocrText: error.ocrText || 'OCR failed'
+        };
+        setCapturedPhotos(prev => 
+          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+        );
       }
-
-    } catch (error) {
-      console.error('Photo processing error:', error);
-      alert('Error processing photos: ' + error.message);
-      setCurrentStep('photo-capture');
-    } finally {
-      setProcessing(false);
     }
-  };
+
+    // Step 3: After processing, move to PDA upload to match with system data
+    if (extractedDataFromPhotos.length > 0) {
+      const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
+      
+      // Store the extracted photo data for later matching
+      setDeliveries(successfulExtractions.map(item => ({
+        ...item.extractedData,
+        photoSetId: item.photoSetId,
+        labelPhoto: item.labelPhoto,
+        labelPreview: item.labelPreview,
+        parcelPhoto: item.parcelPhoto,
+        parcelPreview: item.parcelPreview,
+        originalPhotos: item.originalPhotos,
+        ocrText: item.ocrText,
+        ocrConfidence: item.ocrConfidence,
+        source: 'ocr-ai-photo-temp'
+      })));
+      
+      alert(`✅ FREE Client-side OCR + AI processed ${successfulExtractions.length} orders from photos! Now upload PDA list to match with system data.`);
+      setCurrentStep('upload'); // Move to PDA upload step
+      
+    } else {
+      alert('❌ No data could be extracted from photos using FREE OCR + AI');
+      setCurrentStep('photo-capture');
+    }
+
+  } catch (error) {
+    console.error('Photo processing error:', error);
+    alert('Error processing photos: ' + error.message);
+    setCurrentStep('photo-capture');
+  } finally {
+    setProcessing(false);
+  }
+};
 
   // Combine REAL AI photo data with PDA list data
-  const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
-    return pdaDeliveries.map(pdaDelivery => {
-      // Find matching photo data using REAL AI extracted data
-      const matchingPhoto = photoData.find(photoItem => {
-        const extracted = photoItem.extractedData;
+ // Combine REAL AI photo data with PDA list data
+const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
+  return pdaDeliveries.map(pdaDelivery => {
+    // Find matching photo data using REAL AI extracted data
+    const matchingPhoto = photoData.find(photoItem => {
+      const extracted = photoItem.extractedData;
+      
+      if (!extracted) return false;
+
+      // Multiple matching strategies with REAL data
+      const matches = [
+        // Match by address (most reliable)
+        extracted.address && pdaDelivery.address && 
+        addressesMatch(extracted.address, pdaDelivery.address),
         
-        if (!extracted) return false;
+        // Match by phone number
+        extracted.phoneNumber && pdaDelivery.phoneNumber &&
+        phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
+        
+        // Match by client name
+        extracted.clientName && pdaDelivery.clientName &&
+        namesMatch(extracted.clientName, pdaDelivery.clientName),
+        
+        // Match by barcode/reference
+        extracted.barcode && pdaDelivery.barcode &&
+        barcodesMatch(extracted.barcode, pdaDelivery.barcode)
+      ];
 
-        // Multiple matching strategies with REAL data
-        const matches = [
-          // Match by address (most reliable)
-          extracted.address && pdaDelivery.address && 
-          addressesMatch(extracted.address, pdaDelivery.address),
-          
-          // Match by phone number
-          extracted.phoneNumber && pdaDelivery.phoneNumber &&
-          phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
-          
-          // Match by client name
-          extracted.clientName && pdaDelivery.clientName &&
-          namesMatch(extracted.clientName, pdaDelivery.clientName),
-          
-          // Match by barcode/reference
-          extracted.barcode && pdaDelivery.barcode &&
-          barcodesMatch(extracted.barcode, pdaDelivery.barcode)
-        ];
-
-        return matches.some(match => match === true);
-      });
-
-      if (matchingPhoto && matchingPhoto.extractedData) {
-        // Combine PDA data with REAL AI photo data
-        return {
-          ...pdaDelivery,
-          ...matchingPhoto.extractedData,
-          photoSetId: matchingPhoto.photoSetId,
-          labelPhoto: matchingPhoto.labelPhoto,
-          labelPreview: matchingPhoto.labelPreview,
-          parcelPhoto: matchingPhoto.parcelPhoto,
-          parcelPreview: matchingPhoto.parcelPreview,
-          originalPhotos: matchingPhoto.originalPhotos,
-          source: 'ai-enhanced'
-        };
-      }
-
-      // Return original PDA data if no AI photo match found
-      return {
-        ...pdaDelivery,
-        source: 'pda-only'
-      };
+      return matches.some(match => match === true);
     });
-  };
 
+    if (matchingPhoto) {
+      // Combine PDA data with photo data - ALWAYS include photos
+      return {
+        ...pdaDelivery, // Keep all PDA data
+        // ALWAYS include photo data even if no AI data extracted
+        photoSetId: matchingPhoto.photoSetId,
+        labelPhoto: matchingPhoto.labelPhoto,
+        labelPreview: matchingPhoto.labelPreview,
+        parcelPhoto: matchingPhoto.parcelPhoto,
+        parcelPreview: matchingPhoto.parcelPreview,
+        originalPhotos: matchingPhoto.originalPhotos,
+        ocrText: matchingPhoto.ocrText,
+        ocrConfidence: matchingPhoto.ocrConfidence,
+        // Enhance with any additional data from label
+        ...(matchingPhoto.extractedData && {
+          enhancedAddress: matchingPhoto.extractedData.address || pdaDelivery.address,
+          enhancedPhone: matchingPhoto.extractedData.phoneNumber || pdaDelivery.phoneNumber,
+          enhancedName: matchingPhoto.extractedData.clientName || pdaDelivery.clientName,
+          enhancedBarcode: matchingPhoto.extractedData.barcode || pdaDelivery.barcode,
+          enhancedSender: matchingPhoto.extractedData.sender || pdaDelivery.sender,
+          enhancedWeight: matchingPhoto.extractedData.weight || pdaDelivery.weight,
+        }),
+        source: 'photo-enhanced'
+      };
+    }
+
+    // Return original PDA data if no photo match found
+    return {
+      ...pdaDelivery,
+      source: 'pda-only'
+    };
+  });
+};
   // Helper functions for matching REAL data
   const addressesMatch = (addr1, addr2) => {
     const cleanAddr1 = addr1.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -604,7 +650,7 @@ function HomeContent() {
     return barcode1.toString() === barcode2.toString();
   };
 
-  // Handle PDA/list upload
+  // Handle PDA/list upload and match with photos
   const handlePDAUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -630,10 +676,13 @@ function HomeContent() {
         const data = await response.json();
         
         if (data.success) {
-          setDeliveries(data.deliveries);
-          alert(`✅ Found ${data.deliveries.length} deliveries! Now geocoding addresses...`);
+          // Match PDA data with photo data
+          const matchedDeliveries = combinePhotoDataWithPDA(data.deliveries, capturedPhotos);
           
-          await geocodeAddresses(data.deliveries);
+          setDeliveries(matchedDeliveries);
+          alert(`✅ Matched ${capturedPhotos.length} photos with ${data.deliveries.length} PDA orders! Now geocoding addresses...`);
+          
+          await geocodeAddresses(matchedDeliveries);
         } else {
           alert('❌ Error: ' + data.error);
         }
@@ -648,102 +697,93 @@ function HomeContent() {
     }
   };
 
-  const geocodeAddresses = async (deliveriesToGeocode) => {
-    if (deliveriesToGeocode.length === 0) return;
-    
-    setProcessing(true);
-    setCurrentStep('geocoding');
-    
-    try {
-      const response = await fetch('/api/geocode-addresses', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          addresses: deliveriesToGeocode,
-          depot: seurDepot
-        }),
-      });
+const geocodeAddresses = async (deliveriesToGeocode) => {
+  if (deliveriesToGeocode.length === 0) return;
+  
+  setProcessing(true);
+  setCurrentStep('geocoding');
+  
+  try {
+    const response = await fetch('/api/geocode-addresses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        addresses: deliveriesToGeocode,
+        depot: seurDepot
+      }),
+    });
 
-      const data = await response.json();
+    const data = await response.json();
+    
+    if (data.success) {
+      // Preserve ALL photo data when setting geocoded deliveries
+      const deliveriesWithPhotos = data.deliveries.map((delivery, index) => ({
+        ...delivery,
+        // Preserve ALL photo data and properties from original delivery
+        ...deliveriesToGeocode[index], // Include ALL properties including photos
+        source: deliveriesToGeocode[index]?.source || 'geocoded'
+      }));
       
-      if (data.success) {
-        // Preserve photo data when setting geocoded deliveries
-        const deliveriesWithPhotos = data.deliveries.map((delivery, index) => ({
-          ...delivery,
-          // Preserve photo data from original delivery
-          labelPhoto: deliveriesToGeocode[index]?.labelPhoto,
-          labelPreview: deliveriesToGeocode[index]?.labelPreview,
-          parcelPhoto: deliveriesToGeocode[index]?.parcelPhoto, 
-          parcelPreview: deliveriesToGeocode[index]?.parcelPreview,
-          photoSetId: deliveriesToGeocode[index]?.photoSetId,
-          originalPhotos: deliveriesToGeocode[index]?.originalPhotos
-        }));
-        
-        setGeocodedDeliveries(deliveriesWithPhotos);
-        
-        const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
-        alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! Now optimizing route...`);
-        
-        await optimizeRoute(deliveriesWithPhotos);
-      } else {
-        alert('❌ Geocoding error: ' + data.error);
-      }
+      setGeocodedDeliveries(deliveriesWithPhotos);
       
-    } catch (error) {
-      alert('Geocoding error: ' + error.message);
-    } finally {
-      setProcessing(false);
+      const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
+      alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! Now optimizing route...`);
+      
+      await optimizeRoute(deliveriesWithPhotos);
+    } else {
+      alert('❌ Geocoding error: ' + data.error);
     }
-  };
-
-  const optimizeRoute = async (deliveriesWithCoords) => {
-    if (deliveriesWithCoords.length === 0) return;
     
-    setProcessing(true);
-    setCurrentStep('optimizing');
-    
-    try {
-      const response = await fetch('/api/optimize-route', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          deliveries: deliveriesWithCoords,
-          depot: seurDepot
-        }),
-      });
+  } catch (error) {
+    alert('Geocoding error: ' + error.message);
+  } finally {
+    setProcessing(false);
+  }
+};
 
-      const data = await response.json();
+const optimizeRoute = async (deliveriesWithCoords) => {
+  if (deliveriesWithCoords.length === 0) return;
+  
+  setProcessing(true);
+  setCurrentStep('optimizing');
+  
+  try {
+    const response = await fetch('/api/optimize-route', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        deliveries: deliveriesWithCoords,
+        depot: seurDepot
+      }),
+    });
+
+    const data = await response.json();
+    
+    if (data.success) {
+      // Ensure ALL photo data is preserved in optimized route
+      const routeWithPhotos = data.route.map((stop, index) => ({
+        ...stop,
+        // Preserve ALL data from original delivery including photos
+        ...deliveriesWithCoords[index]
+      }));
       
-      if (data.success) {
-        // Ensure photo data is preserved in optimized route
-        const routeWithPhotos = data.route.map((stop, index) => ({
-          ...stop,
-          // Preserve all photo data
-          labelPhoto: deliveriesWithCoords[index]?.labelPhoto,
-          labelPreview: deliveriesWithCoords[index]?.labelPreview,
-          parcelPhoto: deliveriesWithCoords[index]?.parcelPhoto,
-          parcelPreview: deliveriesWithCoords[index]?.parcelPreview,
-          photoSetId: deliveriesWithCoords[index]?.photoSetId
-        }));
-        
-        setOptimizedRoute(routeWithPhotos);
-        setCurrentStep('complete');
-        alert('✅ Route optimized successfully!');
-      } else {
-        alert('❌ Optimization error: ' + data.error);
-      }
-      
-    } catch (error) {
-      alert('Optimization error: ' + error.message);
-    } finally {
-      setProcessing(false);
+      setOptimizedRoute(routeWithPhotos);
+      setCurrentStep('complete');
+      alert('✅ Route optimized successfully!');
+    } else {
+      alert('❌ Optimization error: ' + data.error);
     }
-  };
-
+    
+  } catch (error) {
+    alert('Optimization error: ' + error.message);
+  } finally {
+    setProcessing(false);
+  }
+};
   // Get user's current location
   const getUserLocation = () => {
     setIsGettingLocation(true);
@@ -840,23 +880,28 @@ function HomeContent() {
     }))
   ] : [];
 
-  const getStepStatus = (step) => {
-    if (step === currentStep) return 'current';
-    if (
-      (step === 'photo-capture' && currentStep !== 'photo-capture') ||
-      (step === 'processing-photos' && currentStep === 'upload') ||
-      (step === 'processing-photos' && currentStep === 'geocoding') ||
-      (step === 'processing-photos' && currentStep === 'optimizing') ||
-      (step === 'processing-photos' && currentStep === 'complete') ||
-      (step === 'upload' && currentStep === 'geocoding') ||
-      (step === 'upload' && currentStep === 'optimizing') ||
-      (step === 'upload' && currentStep === 'complete') ||
-      (step === 'geocoding' && currentStep === 'optimizing') ||
-      (step === 'geocoding' && currentStep === 'complete') ||
-      (step === 'optimizing' && currentStep === 'complete')
-    ) return 'completed';
-    return 'pending';
-  };
+const getStepStatus = (step) => {
+  // If we have an optimized route, we're always complete
+  if (optimizedRoute.length > 0 && step === 'complete') {
+    return 'current';
+  }
+  
+  if (step === currentStep) return 'current';
+  if (
+    (step === 'photo-capture' && currentStep !== 'photo-capture') ||
+    (step === 'processing-photos' && currentStep === 'upload') ||
+    (step === 'processing-photos' && currentStep === 'geocoding') ||
+    (step === 'processing-photos' && currentStep === 'optimizing') ||
+    (step === 'processing-photos' && currentStep === 'complete') ||
+    (step === 'upload' && currentStep === 'geocoding') ||
+    (step === 'upload' && currentStep === 'optimizing') ||
+    (step === 'upload' && currentStep === 'complete') ||
+    (step === 'geocoding' && currentStep === 'optimizing') ||
+    (step === 'geocoding' && currentStep === 'complete') ||
+    (step === 'optimizing' && currentStep === 'complete')
+  ) return 'completed';
+  return 'pending';
+};
 
   // Get current route name for display
   const getCurrentRouteName = () => {
@@ -871,10 +916,6 @@ function HomeContent() {
   const removePhotoSet = (photoSetId) => {
     setCapturedPhotos(prev => prev.filter(photoSet => photoSet.id !== photoSetId));
   };
-
-  // ... (The rest of your JSX remains exactly the same)
-  // [Keep all your existing JSX return statement exactly as it was]
-  // Only the data storage logic has been updated
 
   return (
     <main className="min-h-screen bg-white text-gray-900">
@@ -1016,34 +1057,53 @@ function HomeContent() {
 
       {/* Main Content */}
       <div className="max-w-6xl mx-auto px-3 md:px-4 py-4 md:py-8">
-        {/* Route Indicator */}
-        {optimizedRoute.length > 0 && (
-          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                <span className="text-sm text-blue-700">
-                  📋 {optimizedRoute.length} deliveries in {getCurrentRouteName()}
-                </span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={createNewRoute}
-                  className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 transition-colors flex items-center space-x-1"
-                >
-                  <span>+</span>
-                  <span>New Route</span>
-                </button>
-                <button
-                  onClick={clearSavedData}
-                  className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors"
-                >
-                  Clear Data
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        
+{/* Route Indicator */}
+  {/* Route Indicator */}
+  {optimizedRoute.length > 0 && (
+    <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+          <span className="text-sm text-blue-700">
+            📋 {optimizedRoute.length} deliveries in {getCurrentRouteName()}
+          </span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={createNewRoute}
+            className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 transition-colors flex items-center space-x-1"
+          >
+            <span>+</span>
+            <span>New Route</span>
+          </button>
+          <button
+            onClick={clearSavedData}
+            className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors"
+          >
+            Clear Data
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* ADD THE COMPLETE INDICATOR RIGHT HERE */}
+  {optimizedRoute.length > 0 && currentStep === 'complete' && (
+    <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+          <span className="text-sm text-green-700">
+            ✅ Route Complete - Ready for Delivery!
+          </span>
+        </div>
+        <div className="text-xs text-green-600">
+          {optimizedRoute.length} stops optimized
+        </div>
+      </div>
+    </div>
+  )}
 
         {/* Progress Steps - Mobile Horizontal Scroll */}
         <div className="mb-6 md:mb-8">
@@ -1060,9 +1120,9 @@ function HomeContent() {
                 <div className={`ml-2 text-xs md:text-sm ${
                   getStepStatus(step) === 'current' ? 'text-gray-900 font-semibold' : 'text-gray-600'
                 } hidden sm:block`}>
-                  {step === 'photo-capture' && 'Photos'}
-                  {step === 'processing-photos' && 'Process'}
-                  {step === 'upload' && 'Upload'}
+                  {step === 'photo-capture' && 'Take Photos'}
+                  {step === 'processing-photos' && 'AI Process'}
+                  {step === 'upload' && 'Match PDA'}
                   {step === 'geocoding' && 'Geocode'}
                   {step === 'optimizing' && 'Optimize'}
                   {step === 'complete' && 'Complete'}
@@ -1171,39 +1231,78 @@ function HomeContent() {
                         </div>
 
                         {/* Extracted Data Display */}
-                        <div className="flex-1 ml-4">
-                          {photoSet.extractedData ? (
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                              <div className="text-xs font-semibold text-green-800 mb-2">📋 Extracted Data:</div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-                                {photoSet.extractedData.clientName && (
-                                  <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
-                                )}
-                                {photoSet.extractedData.address && (
-                                  <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
-                                )}
-                                {photoSet.extractedData.phoneNumber && (
-                                  <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-                                )}
-                                {photoSet.extractedData.barcode && (
-                                  <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
-                                )}
-                                {photoSet.extractedData.sender && (
-                                  <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
-                                )}
-                                {photoSet.extractedData.weight && (
-                                  <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                              <div className="text-xs text-yellow-700">
-                                ⏳ Waiting for AI extraction...
-                              </div>
-                            </div>
-                          )}
-                        </div>
+// In your captured photos preview section:
+
+{/* Extracted Data Display */}
+<div className="flex-1 ml-4">
+  {photoSet.extractedData ? (
+    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-semibold text-green-800">
+          ✅ FREE OCR + AI Extracted Data:
+        </div>
+        {photoSet.ocrConfidence && (
+          <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+            Confidence: {Math.round(photoSet.ocrConfidence)}%
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+        {photoSet.extractedData.clientName && (
+          <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
+        )}
+        {photoSet.extractedData.address && (
+          <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
+        )}
+        {photoSet.extractedData.phoneNumber && (
+          <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
+        )}
+        {photoSet.extractedData.barcode && (
+          <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
+        )}
+        {photoSet.extractedData.sender && (
+          <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
+        )}
+        {photoSet.extractedData.weight && (
+          <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
+        )}
+      </div>
+      {/* Show OCR text */}
+      {photoSet.ocrText && (
+        <details className="mt-2">
+          <summary className="text-xs text-gray-600 cursor-pointer">
+            📝 View OCR Raw Text
+          </summary>
+          <div className="mt-1 p-2 bg-gray-100 rounded text-xs font-mono overflow-auto max-h-20">
+            {photoSet.ocrText}
+          </div>
+        </details>
+      )}
+    </div>
+  ) : photoSet.error ? (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+      <div className="text-xs text-red-700">
+        ❌ OCR Processing Failed: {photoSet.error}
+      </div>
+      {photoSet.ocrText && (
+        <details className="mt-2">
+          <summary className="text-xs text-gray-600 cursor-pointer">
+            📝 View OCR Attempt
+          </summary>
+          <div className="mt-1 p-2 bg-gray-100 rounded text-xs font-mono overflow-auto max-h-20">
+            {photoSet.ocrText}
+          </div>
+        </details>
+      )}
+    </div>
+  ) : (
+    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+      <div className="text-xs text-yellow-700">
+        ⏳ FREE Client-side OCR + AI processing...
+      </div>
+    </div>
+  )}
+</div>
 
                         <button
                           onClick={() => removePhotoSet(photoSet.id)}
@@ -1224,13 +1323,6 @@ function HomeContent() {
                   >
                     {processing ? 'Processing...' : `Process ${capturedPhotos.length} Orders`}
                   </button>
-                  
-                  <button
-                    onClick={() => setCurrentStep('upload')}
-                    className="flex-1 bg-gray-500 text-white py-2 rounded-lg font-semibold hover:bg-gray-600 transition-colors"
-                  >
-                    Use PDA/List Instead
-                  </button>
                 </div>
               </div>
             )}
@@ -1238,26 +1330,40 @@ function HomeContent() {
         )}
 
         {/* Processing Photos Status */}
-        {processing && currentStep === 'processing-photos' && (
-          <div className="mb-4 md:mb-6 p-3 md:p-4 bg-gray-50 rounded-lg border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2 md:space-x-3">
-                <div className="w-2 h-2 md:w-3 md:h-3 bg-black rounded-full animate-pulse"></div>
-                <div className="text-gray-900 text-sm md:text-base">
-                  🤖 AI is processing {capturedPhotos.length} order photos...
-                </div>
-              </div>
-              <div className="text-xs md:text-sm text-gray-600">
-                Extracting delivery information
-              </div>
-            </div>
-          </div>
-        )}
+{/* Processing Photos Status */}
+{/* Processing Photos Status */}
+{processing && currentStep === 'processing-photos' && (
+  <div className="mb-4 md:mb-6 p-3 md:p-4 bg-gray-50 rounded-lg border border-gray-200">
+    <div className="flex items-center justify-between">
+      <div className="flex items-center space-x-2 md:space-x-3">
+        <div className="w-2 h-2 md:w-3 md:h-3 bg-black rounded-full animate-pulse"></div>
+        <div className="text-gray-900 text-sm md:text-base">
+          🔍 FREE Client-side OCR processing {capturedPhotos.length} photos...
+        </div>
+      </div>
+      <div className="text-xs md:text-sm text-gray-600">
+        Using Tesseract.js (FREE) in browser
+      </div>
+    </div>
+  </div>
+)}
 
-        {/* PDA/List Upload Section */}
+        {/* PDA/List Upload Section - FOR MATCHING WITH PHOTOS */}
         {currentStep === 'upload' && !optimizedRoute.length && (
           <div className="mb-6 md:mb-8 p-4 md:p-6 bg-white rounded-lg border border-gray-200 shadow-sm">
-            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">📄 Upload PDA/Delivery List</h2>
+            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">
+              📄 Upload PDA List to Match with {capturedPhotos.length} Photos
+            </h2>
+            
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center space-x-2">
+                <div className="text-blue-500">ℹ️</div>
+                <div className="text-sm text-blue-700">
+                  We found {capturedPhotos.length} orders from photos. Now upload your PDA/delivery list to match with system data.
+                </div>
+              </div>
+            </div>
+
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 md:p-8 text-center hover:border-gray-400 transition-colors">
               <input 
                 type="file" 
@@ -1273,30 +1379,67 @@ function HomeContent() {
               >
                 <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
                 <div className="text-base md:text-lg font-semibold mb-2 text-gray-900">
-                  {processing ? 'Processing...' : 'Upload PDA Screenshot or Delivery List'}
+                  {processing ? 'Matching with photos...' : 'Upload PDA/Delivery List'}
                 </div>
                 <div className="text-gray-600 text-xs md:text-sm mb-4">
-                  Or go back to <button 
-                    type="button"
-                    onClick={() => setCurrentStep('photo-capture')}
-                    className="text-blue-500 hover:text-blue-700 underline"
-                  >
-                    photo capture
-                  </button>
+                  We'll match your {capturedPhotos.length} captured photos with the system delivery list
                 </div>
                 <button 
                   disabled={processing}
                   className="bg-black text-white px-4 md:px-6 py-2 md:py-3 rounded-lg font-semibold hover:bg-gray-800 disabled:bg-gray-400 disabled:text-gray-200 transition-colors text-sm md:text-base w-full md:w-auto"
                 >
-                  {processing ? 'Processing...' : 'Choose File'}
+                  {processing ? 'Processing...' : 'Upload PDA List'}
                 </button>
               </label>
             </div>
+            
+            {/* Show photo previews that will be matched */}
+            {capturedPhotos.length > 0 && (
+              <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                <h4 className="font-semibold mb-3 text-gray-900">
+                  Photos to be matched ({capturedPhotos.length})
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {capturedPhotos.slice(0, 4).map((photoSet, index) => (
+                    <div key={photoSet.id} className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">Order {index + 1}</div>
+                      <div className="flex space-x-1 justify-center">
+                        {photoSet.label?.preview && (
+                          <img 
+                            src={photoSet.label.preview} 
+                            alt="Label" 
+                            className="w-8 h-8 object-cover rounded border"
+                          />
+                        )}
+                        {photoSet.parcel?.preview && (
+                          <img 
+                            src={photoSet.parcel.preview} 
+                            alt="Parcel" 
+                            className="w-8 h-8 object-cover rounded border"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {capturedPhotos.length > 4 && (
+                    <div className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">And {capturedPhotos.length - 4} more...</div>
+                      <div className="w-16 h-8 bg-gray-200 rounded flex items-center justify-center">
+                        <span className="text-xs text-gray-600">+{capturedPhotos.length - 4}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            
             {processing && currentStep === 'upload' && (
               <div className="mt-3 md:mt-4 p-3 bg-gray-50 rounded-lg text-center">
                 <div className="flex items-center justify-center space-x-2">
                   <div className="w-3 h-3 bg-black rounded-full animate-pulse"></div>
-                  <div className="text-xs md:text-sm text-gray-600">AI is processing your delivery list...</div>
+                  <div className="text-xs md:text-sm text-gray-600">
+                    Matching {capturedPhotos.length} photos with PDA list...
+                  </div>
                 </div>
               </div>
             )}
@@ -1350,221 +1493,222 @@ function HomeContent() {
         )}
 
         {/* Optimized Route with Map */}
-        {optimizedRoute.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
-            {/* Route List - Hidden on mobile when map is active */}
-            <div className={`bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden ${
-              activeTab === 'map' ? 'hidden lg:block' : 'block'
-            }`}>
-              <div className="p-4 md:p-6 border-b border-gray-200">
-                <div className="flex justify-between items-center">
-                  <h2 className="text-lg md:text-xl font-semibold text-gray-900">Delivery Route</h2>
-                  {focusedSegment !== null && (
-                    <button 
-                      onClick={() => {
-                        window.resetMapFocus && window.resetMapFocus();
-                        setClickedStop(null);
-                      }}
-                      className="bg-black text-white px-3 py-1 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold hover:bg-gray-800 transition-colors"
-                    >
-                      Show Full
-                    </button>
+{/* Optimized Route with Map */}
+{(optimizedRoute.length > 0 || currentStep === 'complete') && (
+  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+    {/* Route List - Hidden on mobile when map is active */}
+    <div className={`bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden ${
+      activeTab === 'map' ? 'hidden lg:block' : 'block'
+    }`}>
+      <div className="p-4 md:p-6 border-b border-gray-200">
+        <div className="flex justify-between items-center">
+          <h2 className="text-lg md:text-xl font-semibold text-gray-900">Delivery Route</h2>
+          {focusedSegment !== null && (
+            <button 
+              onClick={() => {
+                window.resetMapFocus && window.resetMapFocus();
+                setClickedStop(null);
+              }}
+              className="bg-black text-white px-3 py-1 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold hover:bg-gray-800 transition-colors"
+            >
+              Show Full
+            </button>
+          )}
+        </div>
+        <div className="mt-1 md:mt-2 text-xs md:text-sm text-gray-600">
+          {optimizedRoute.length} stops • Chain optimized
+        </div>
+      </div>
+      
+      <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
+        {optimizedRoute.map((stop, index) => (
+          <div 
+            key={index}
+            className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all cursor-pointer ${
+              clickedStop === index 
+                ? 'border-2 border-black bg-gray-50' 
+                : 'border-0'
+            }`}
+            onClick={() => handleStopClick(index)}
+          >
+            <div className="flex justify-between items-start mb-3">
+              <div className="flex items-center">
+                <div className="w-6 h-6 md:w-8 md:h-8 bg-black text-white rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3">
+                  {stop.stopNumber}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
+                  <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0 ml-2">
+                <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
+                  📍 {stop.distanceFromPrevious}
+                </div>
+                <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
+              </div>
+            </div>
+            
+            <div className="mb-3 md:mb-4">
+              <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
+              <div className="text-gray-900 text-sm md:text-base break-words">{stop.address}</div>
+            </div>
+
+            {/* ALWAYS Show photo previews - Remove the clickedStop condition */}
+            {(stop.labelPreview || stop.parcelPreview) && (
+              <div className="mb-3">
+                <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+                <div className="flex space-x-3">
+                  {stop.labelPreview && (
+                    <div className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">Label</div>
+                      <img 
+                        src={stop.labelPreview} 
+                        alt="Label" 
+                        className="w-12 h-12 object-cover rounded border shadow-sm"
+                      />
+                    </div>
+                  )}
+                  {stop.parcelPreview && (
+                    <div className="text-center">
+                      <div className="text-xs text-gray-500 mb-1">Parcel</div>
+                      <img 
+                        src={stop.parcelPreview} 
+                        alt="Parcel" 
+                        className="w-12 h-12 object-cover rounded border shadow-sm"
+                      />
+                    </div>
                   )}
                 </div>
-                <div className="mt-1 md:mt-2 text-xs md:text-sm text-gray-600">
-                  {optimizedRoute.length} stops • Chain optimized
-                </div>
               </div>
-              
-              <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
-                {optimizedRoute.map((stop, index) => (
-                  <div 
-                    key={index}
-                    className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all cursor-pointer ${
-                      clickedStop === index 
-                        ? 'border-2 border-black bg-gray-50' 
-                        : 'border-0'
-                    }`}
-                    onClick={() => handleStopClick(index)}
-                  >
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex items-center">
-                        <div className="w-6 h-6 md:w-8 md:h-8 bg-black text-white rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3">
-                          {stop.stopNumber}
+            )}
+
+            {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
+            {clickedStop === index && (
+              <div className="mt-4">
+                {/* Show full-size images between Get Directions and the actual directions */}
+                {(stop.labelPhoto || stop.parcelPhoto) && (
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                    <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {stop.labelPhoto && (
+                        <div className="text-center">
+                          <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+                          <img 
+                            src={stop.labelPhoto} 
+                            alt="Shipping Label" 
+                            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                          />
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
-                          <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
+                      )}
+                      {stop.parcelPhoto && (
+                        <div className="text-center">
+                          <div className="text-xs text-gray-500 mb-1">Parcel View</div>
+                          <img 
+                            src={stop.parcelPhoto} 
+                            alt="Parcel" 
+                            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                          />
                         </div>
-                      </div>
-                      <div className="text-right flex-shrink-0 ml-2">
-                        <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
-                          📍 {stop.distanceFromPrevious}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
-                      </div>
+                      )}
                     </div>
-                    
-                    <div className="mb-3 md:mb-4">
-                      <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
-                      <div className="text-gray-900 text-sm md:text-base break-words">{stop.address}</div>
-                    </div>
-
-                    {/* Show photo previews when stop is focused/clicked */}
-                    {clickedStop === index && (stop.labelPreview || stop.parcelPreview) && (
-                      <div className="mb-3">
-                        <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-                        <div className="flex space-x-3">
-                          {stop.labelPreview && (
-                            <div className="text-center">
-                              <div className="text-xs text-gray-500 mb-1">Label</div>
-                              <img 
-                                src={stop.labelPreview} 
-                                alt="Label" 
-                                className="w-12 h-12 object-cover rounded border shadow-sm"
-                              />
-                            </div>
-                          )}
-                          {stop.parcelPreview && (
-                            <div className="text-center">
-                              <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                              <img 
-                                src={stop.parcelPreview} 
-                                alt="Parcel" 
-                                className="w-12 h-12 object-cover rounded border shadow-sm"
-                              />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
-                    {clickedStop === index && (
-                      <div className="mt-4">
-                        {/* Show full-size images between Get Directions and the actual directions */}
-                        {(stop.labelPhoto || stop.parcelPhoto) && (
-                          <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                            <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              {stop.labelPhoto && (
-                                <div className="text-center">
-                                  <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
-                                  <img 
-                                    src={stop.labelPhoto} 
-                                    alt="Shipping Label" 
-                                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                                  />
-                                </div>
-                              )}
-                              {stop.parcelPhoto && (
-                                <div className="text-center">
-                                  <div className="text-xs text-gray-500 mb-1">Parcel View</div>
-                                  <img 
-                                    src={stop.parcelPhoto} 
-                                    alt="Parcel" 
-                                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {!userLocation && !isGettingLocation && (
-                          <button
-                            onClick={(e) => handleGoogleMapsClick(stop, e)}
-                            className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
-                          >
-                            <span>🗺️</span>
-                            <span>Get Directions</span>
-                          </button>
-                        )}
-
-                        {isGettingLocation && (
-                          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                            <div className="flex items-center justify-center space-x-2">
-                              <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
-                              <span className="text-sm text-blue-700">Getting your location...</span>
-                            </div>
-                          </div>
-                        )}
-
-                        {locationError && (
-                          <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                            <p className="text-sm text-red-700 mb-2">{locationError}</p>
-                            <button
-                              onClick={(e) => handleGoogleMapsClick(stop, e)}
-                              className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
-                            >
-                              🔄 Try Again
-                            </button>
-                          </div>
-                        )}
-
-                        {userLocation && (
-                          <button
-                            onClick={(e) => openGoogleMapsDirections(stop)}
-                            className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
-                          >
-                            <span>🗺️</span>
-                            <span>Open Google Maps</span>
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Map - Hidden on mobile when route is active */}
-            <div className={`bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden ${
-              activeTab === 'route' ? 'hidden lg:block' : 'block'
-            }`}>
-              <div className="p-4 md:p-6 border-b border-gray-200">
-                <h2 className="text-lg md:text-xl font-semibold text-gray-900">
-                  {focusedSegment !== null ? 'Focused Segment' : 'Route Map'}
-                </h2>
-                {focusedSegment !== null && (
-                  <div className="mt-1 md:mt-2 text-xs md:text-sm text-gray-600">
-                    {focusedSegment === 0 ? 'Depot to Stop 1' : `Stop ${focusedSegment} to ${focusedSegment + 1}`}
                   </div>
                 )}
-              </div>
-              <div className="h-[50vh] md:h-[600px]">
-                <RouteMap stops={mapStops} onFocusChange={handleFocusChange} />
-              </div>
-              <div className="p-3 md:p-4 border-t border-gray-200">
-                <div className="flex items-center justify-center space-x-4 md:space-x-6 text-xs md:text-sm text-gray-600 flex-wrap gap-2">
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 md:w-3 md:h-3 bg-red-500 rounded-full mr-1 md:mr-2"></div>
-                    <span>Depot</span>
+
+                {!userLocation && !isGettingLocation && (
+                  <button
+                    onClick={(e) => handleGoogleMapsClick(stop, e)}
+                    className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
+                  >
+                    <span>🗺️</span>
+                    <span>Get Directions</span>
+                  </button>
+                )}
+
+                {isGettingLocation && (
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center justify-center space-x-2">
+                      <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span className="text-sm text-blue-700">Getting your location...</span>
+                    </div>
                   </div>
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 md:w-3 md:h-3 bg-black rounded-full mr-1 md:mr-2"></div>
-                    <span>Stops</span>
+                )}
+
+                {locationError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm text-red-700 mb-2">{locationError}</p>
+                    <button
+                      onClick={(e) => handleGoogleMapsClick(stop, e)}
+                      className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
+                    >
+                      🔄 Try Again
+                    </button>
                   </div>
-                  <div className="flex items-center">
-                    <div className="w-4 md:w-6 h-1 bg-green-500 mr-1 md:mr-2"></div>
-                    <span>Route</span>
-                  </div>
-                </div>
+                )}
+
+                {userLocation && (
+                  <button
+                    onClick={(e) => openGoogleMapsDirections(stop)}
+                    className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
+                  >
+                    <span>🗺️</span>
+                    <span>Open Google Maps</span>
+                  </button>
+                )}
               </div>
-            </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+
+    {/* Map - Hidden on mobile when route is active */}
+    <div className={`bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden ${
+      activeTab === 'route' ? 'hidden lg:block' : 'block'
+    }`}>
+      <div className="p-4 md:p-6 border-b border-gray-200">
+        <h2 className="text-lg md:text-xl font-semibold text-gray-900">
+          {focusedSegment !== null ? 'Focused Segment' : 'Route Map'}
+        </h2>
+        {focusedSegment !== null && (
+          <div className="mt-1 md:mt-2 text-xs md:text-sm text-gray-600">
+            {focusedSegment === 0 ? 'Depot to Stop 1' : `Stop ${focusedSegment} to ${focusedSegment + 1}`}
           </div>
         )}
+      </div>
+      <div className="h-[50vh] md:h-[600px]">
+        <RouteMap stops={mapStops} onFocusChange={handleFocusChange} />
+      </div>
+      <div className="p-3 md:p-4 border-t border-gray-200">
+        <div className="flex items-center justify-center space-x-4 md:space-x-6 text-xs md:text-sm text-gray-600 flex-wrap gap-2">
+          <div className="flex items-center">
+            <div className="w-2 h-2 md:w-3 md:h-3 bg-red-500 rounded-full mr-1 md:mr-2"></div>
+            <span>Depot</span>
+          </div>
+          <div className="flex items-center">
+            <div className="w-2 h-2 md:w-3 md:h-3 bg-black rounded-full mr-1 md:mr-2"></div>
+            <span>Stops</span>
+          </div>
+          <div className="flex items-center">
+            <div className="w-4 md:w-6 h-1 bg-green-500 mr-1 md:mr-2"></div>
+            <span>Route</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
         {/* Empty State */}
-        {!optimizedRoute.length && !processing && currentStep === 'photo-capture' && capturedPhotos.length === 0 && (
-          <div className="text-center py-12 md:py-16">
-            <div className="text-4xl md:text-6xl mb-4">📸</div>
-            <h3 className="text-xl md:text-2xl font-semibold mb-2 text-gray-900">Start by Capturing Photos</h3>
-            <p className="text-gray-600 max-w-md mx-auto text-sm md:text-base px-4">
-              Take two photos for each order: one of the label and one of the parcel
-            </p>
-          </div>
-        )}
+       {!optimizedRoute.length && currentStep === 'photo-capture' && capturedPhotos.length === 0 && (
+  <div className="text-center py-12 md:py-16">
+    <div className="text-4xl md:text-6xl mb-4">📸</div>
+    <h3 className="text-xl md:text-2xl font-semibold mb-2 text-gray-900">Start by Capturing Photos</h3>
+    <p className="text-gray-600 max-w-md mx-auto text-sm md:text-base px-4">
+      Take two photos for each order: one of the label and one of the parcel
+    </p>
+  </div>
+)}
       </div>
 
       {/* Mobile Bottom Navigation */}
