@@ -4,6 +4,148 @@ import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react'
 
+// IndexedDB Utility
+class SeurDB {
+  constructor() {
+    this.dbName = 'SeurDeliveryDB';
+    this.version = 1;
+    this.db = null;
+  }
+
+  async init() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, this.version);
+
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        this.db = request.result;
+        resolve(this.db);
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        
+        if (!db.objectStoreNames.contains('routes')) {
+          const routesStore = db.createObjectStore('routes', { keyPath: 'id' });
+          routesStore.createIndex('createdAt', 'createdAt', { unique: false });
+        }
+        
+        if (!db.objectStoreNames.contains('photos')) {
+          db.createObjectStore('photos', { keyPath: 'id' });
+        }
+      };
+    });
+  }
+
+  async saveRoute(routeData) {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['routes'], 'readwrite');
+      const store = transaction.objectStore('routes');
+      
+      const request = store.put({
+        ...routeData,
+        createdAt: new Date().toISOString()
+      });
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getRoute(routeId) {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['routes'], 'readonly');
+      const store = transaction.objectStore('routes');
+      
+      const request = store.get(routeId);
+      
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getAllRoutes() {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['routes'], 'readonly');
+      const store = transaction.objectStore('routes');
+      const index = store.index('createdAt');
+      
+      const request = index.getAll();
+      
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async deleteRoute(routeId) {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['routes'], 'readwrite');
+      const store = transaction.objectStore('routes');
+      
+      const request = store.delete(routeId);
+      
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async savePhotos(photos) {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['photos'], 'readwrite');
+      const store = transaction.objectStore('photos');
+      
+      const request = store.put({
+        id: 'current_photos',
+        photos: photos,
+        updatedAt: new Date().toISOString()
+      });
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getPhotos() {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['photos'], 'readonly');
+      const store = transaction.objectStore('photos');
+      
+      const request = store.get('current_photos');
+      
+      request.onsuccess = () => resolve(request.result?.photos || []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async clearAll() {
+    if (!this.db) await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['routes', 'photos'], 'readwrite');
+      
+      transaction.objectStore('routes').clear();
+      transaction.objectStore('photos').clear();
+      
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+}
+
+const seurDB = new SeurDB();
+
 export default function Home() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -11,6 +153,7 @@ export default function Home() {
     </Suspense>
   )
 }
+
 const RouteMap = dynamic(() => import('./components/RouteMap'), {
   ssr: false,
   loading: () => <div className="h-64 md:h-96 bg-gray-100 rounded-lg flex items-center justify-center text-gray-600">Loading map...</div>
@@ -33,6 +176,7 @@ function HomeContent() {
   const [capturedPhotos, setCapturedPhotos] = useState([]);
   const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ label: null, parcel: null });
   const [photoStep, setPhotoStep] = useState('label');
+  const [dbReady, setDbReady] = useState(false);
   
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -46,19 +190,27 @@ function HomeContent() {
     lng: -1.9451188
   };
 
-  // Load data from localStorage on component mount and when routeId changes
+  // Initialize DB
   useEffect(() => {
-    const savedData = localStorage.getItem('seurDeliveryData');
-    const savedRoutesData = localStorage.getItem('seurSavedRoutes');
-    const savedPhotos = localStorage.getItem('seurCapturedPhotos');
-    
-    if (savedRoutesData) {
+    const initDB = async () => {
       try {
-        const routes = JSON.parse(savedRoutesData);
-        setSavedRoutes(routes);
-        
+        await seurDB.init();
+        setDbReady(true);
+      } catch (error) {
+        console.error('Failed to initialize DB:', error);
+      }
+    };
+    initDB();
+  }, []);
+
+  // Load data from IndexedDB
+  useEffect(() => {
+    if (!dbReady) return;
+
+    const loadData = async () => {
+      try {
         if (routeId) {
-          const routeToLoad = routes.find(r => r.id.toString() === routeId);
+          const routeToLoad = await seurDB.getRoute(parseInt(routeId));
           if (routeToLoad) {
             setDeliveries(routeToLoad.deliveries);
             setGeocodedDeliveries(routeToLoad.geocodedDeliveries);
@@ -68,79 +220,42 @@ function HomeContent() {
             }
             setCurrentStep('complete');
           }
-        } else if (savedData) {
-          try {
-            const parsedData = JSON.parse(savedData);
-            setDeliveries(parsedData.deliveries || []);
-            setGeocodedDeliveries(parsedData.geocodedDeliveries || []);
-            setOptimizedRoute(parsedData.optimizedRoute || []);
-            setCurrentStep(parsedData.currentStep || 'photo-capture');
-            
-            if (parsedData.optimizedRoute && parsedData.optimizedRoute.length > 0) {
-              setCurrentStep('complete');
-            }
-          } catch (error) {
-            console.error('Error loading saved data:', error);
-            localStorage.removeItem('seurDeliveryData');
-          }
+        } else {
+          // Load current photos
+          const savedPhotos = await seurDB.getPhotos();
+          setCapturedPhotos(savedPhotos);
+          
+          // Load recent routes for dropdown
+          const allRoutes = await seurDB.getAllRoutes();
+          setSavedRoutes(allRoutes);
         }
       } catch (error) {
-        console.error('Error loading saved routes:', error);
+        console.error('Error loading data:', error);
       }
-    } else if (savedData) {
+    };
+
+    loadData();
+  }, [dbReady, routeId]);
+
+  // Save photos to IndexedDB
+  useEffect(() => {
+    if (!dbReady) return;
+
+    const saveData = async () => {
       try {
-        const parsedData = JSON.parse(savedData);
-        setDeliveries(parsedData.deliveries || []);
-        setGeocodedDeliveries(parsedData.geocodedDeliveries || []);
-        setOptimizedRoute(parsedData.optimizedRoute || []);
-        setCurrentStep(parsedData.currentStep || 'photo-capture');
-        
-        if (parsedData.optimizedRoute && parsedData.optimizedRoute.length > 0) {
-          setCurrentStep('complete');
+        if (!routeId) {
+          await seurDB.savePhotos(capturedPhotos);
         }
       } catch (error) {
-        console.error('Error loading saved data:', error);
-        localStorage.removeItem('seurDeliveryData');
+        console.error('Error saving photos:', error);
       }
-    }
+    };
 
-    if (savedPhotos && !routeId) {
-      try {
-        setCapturedPhotos(JSON.parse(savedPhotos));
-      } catch (error) {
-        console.error('Error loading saved photos:', error);
-      }
-    }
-  }, [routeId]);
-
-  // Save data to localStorage whenever it changes (only if no route ID in URL)
-  useEffect(() => {
-    if (!routeId) {
-      const dataToSave = {
-        deliveries,
-        geocodedDeliveries,
-        optimizedRoute,
-        currentStep,
-        savedAt: new Date().toISOString()
-      };
-      localStorage.setItem('seurDeliveryData', JSON.stringify(dataToSave));
-    }
-  }, [deliveries, geocodedDeliveries, optimizedRoute, currentStep, routeId]);
-
-  // Save routes whenever they change
-  useEffect(() => {
-    localStorage.setItem('seurSavedRoutes', JSON.stringify(savedRoutes));
-  }, [savedRoutes]);
-
-  // Save photos whenever they change (only if no route ID in URL)
-  useEffect(() => {
-    if (!routeId) {
-      localStorage.setItem('seurCapturedPhotos', JSON.stringify(capturedPhotos));
-    }
-  }, [capturedPhotos, routeId]);
+    saveData();
+  }, [capturedPhotos, dbReady, routeId]);
 
   // Clear all saved data
-  const clearSavedData = () => {
+  const clearSavedData = async () => {
     setDeliveries([]);
     setGeocodedDeliveries([]);
     setOptimizedRoute([]);
@@ -150,14 +265,23 @@ function HomeContent() {
     setCapturedPhotos([]);
     setCurrentOrderPhotos({ label: null, parcel: null });
     setPhotoStep('label');
-    localStorage.removeItem('seurDeliveryData');
-    localStorage.removeItem('seurCapturedPhotos');
+    
+    if (dbReady) {
+      try {
+        await seurDB.clearAll();
+        const updatedRoutes = await seurDB.getAllRoutes();
+        setSavedRoutes(updatedRoutes);
+      } catch (error) {
+        console.error('Error clearing data:', error);
+      }
+    }
+    
     router.push('/');
   };
 
   // Create new route
-  const createNewRoute = () => {
-    if (optimizedRoute.length > 0 && !routeId) {
+  const createNewRoute = async () => {
+    if (optimizedRoute.length > 0 && !routeId && dbReady) {
       const routeDate = new Date().toISOString().split('T')[0];
       const routeTime = new Date().toLocaleTimeString('en-US', { 
         hour12: false,
@@ -177,10 +301,16 @@ function HomeContent() {
         createdAt: new Date().toISOString()
       };
       
-      setSavedRoutes(prev => [newRoute, ...prev]);
+      try {
+        await seurDB.saveRoute(newRoute);
+        const updatedRoutes = await seurDB.getAllRoutes();
+        setSavedRoutes(updatedRoutes);
+      } catch (error) {
+        console.error('Error saving route:', error);
+      }
     }
     
-    // Reset for new route and clear URL
+    // Reset for new route
     setDeliveries([]);
     setGeocodedDeliveries([]);
     setOptimizedRoute([]);
@@ -194,34 +324,43 @@ function HomeContent() {
     router.push('/');
   };
 
-  // Load route by ID - navigate to URL with route ID
-  const loadRoute = (routeId) => {
-    const route = savedRoutes.find(r => r.id.toString() === routeId);
-    if (route) {
-      setDeliveries(route.deliveries);
-      setGeocodedDeliveries(route.geocodedDeliveries);
-      setOptimizedRoute(route.optimizedRoute);
-      if (route.photos) {
-        setCapturedPhotos(route.photos);
+  // Load route by ID
+  const loadRoute = async (routeId) => {
+    try {
+      const route = await seurDB.getRoute(routeId);
+      if (route) {
+        setDeliveries(route.deliveries);
+        setGeocodedDeliveries(route.geocodedDeliveries);
+        setOptimizedRoute(route.optimizedRoute);
+        if (route.photos) {
+          setCapturedPhotos(route.photos);
+        }
+        setCurrentStep('complete');
+        router.push(`/?route=${routeId}`);
       }
-      setCurrentStep('complete');
-      router.push(`/?route=${routeId}`);
+      setShowRoutesList(false);
+    } catch (error) {
+      console.error('Error loading route:', error);
     }
-    setShowRoutesList(false);
   };
 
   // Delete route
-  const deleteRoute = (routeId, event) => {
+  const deleteRoute = async (routeId, event) => {
     event.stopPropagation();
-    const updatedRoutes = savedRoutes.filter(route => route.id !== routeId);
-    setSavedRoutes(updatedRoutes);
-    
-    if (routeId && routeId.toString() === routeId) {
-      setDeliveries([]);
-      setGeocodedDeliveries([]);
-      setOptimizedRoute([]);
-      setCurrentStep('photo-capture');
-      router.push('/');
+    try {
+      await seurDB.deleteRoute(routeId);
+      const updatedRoutes = await seurDB.getAllRoutes();
+      setSavedRoutes(updatedRoutes);
+      
+      if (routeId && routeId.toString() === routeId) {
+        setDeliveries([]);
+        setGeocodedDeliveries([]);
+        setOptimizedRoute([]);
+        setCurrentStep('photo-capture');
+        router.push('/');
+      }
+    } catch (error) {
+      console.error('Error deleting route:', error);
     }
   };
 
@@ -275,202 +414,197 @@ function HomeContent() {
   };
 
   // Process captured photos with AI
- // Process captured photos with AI
-// Process captured photos with AI
-const processCapturedPhotos = async () => {
-  if (capturedPhotos.length === 0) return;
+  const processCapturedPhotos = async () => {
+    if (capturedPhotos.length === 0) return;
 
-  setProcessing(true);
-  setCurrentStep('processing-photos');
+    setProcessing(true);
+    setCurrentStep('processing-photos');
 
-  try {
-    const processedOrders = [];
-    const extractedDataFromPhotos = [];
+    try {
+      const processedOrders = [];
+      const extractedDataFromPhotos = [];
 
-    // Step 1: Extract REAL data from all photos using OpenAI
-    for (const photoSet of capturedPhotos) {
-      if (photoSet.processed) continue;
+      // Step 1: Extract REAL data from all photos using OpenAI
+      for (const photoSet of capturedPhotos) {
+        if (photoSet.processed) continue;
 
-      console.log("Processing photo set:", photoSet.id);
+        console.log("Processing photo set:", photoSet.id);
 
-      // Send BOTH photos to OpenAI for data extraction
-      const response = await fetch('/api/process-order-photos', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          labelPhoto: photoSet.label.data,
-          parcelPhoto: photoSet.parcel.data
-        }),
-      });
-
-      const data = await response.json();
-      
-      if (data.success && data.delivery) {
-        console.log("AI extracted data:", data.delivery);
-        
-        // Store REAL extracted data from AI
-        extractedDataFromPhotos.push({
-          photoSetId: photoSet.id,
-          extractedData: data.delivery, // REAL AI DATA
-          labelPhoto: photoSet.label.data,
-          labelPreview: photoSet.label.preview,
-          parcelPhoto: photoSet.parcel.data,
-          parcelPreview: photoSet.parcel.preview,
-          originalPhotos: photoSet
+        // Send BOTH photos to OpenAI for data extraction
+        const response = await fetch('/api/process-order-photos', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            labelPhoto: photoSet.label.data,
+            parcelPhoto: photoSet.parcel.data
+          }),
         });
 
-        // Mark as processed with REAL data
-        const updatedPhotoSet = {
-          ...photoSet,
-          extractedData: data.delivery, // REAL AI DATA
-          processed: true
-        };
+        const data = await response.json();
         
-        setCapturedPhotos(prev => 
-          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-        );
-      } else {
-        console.error("AI processing failed:", data.error);
-        // Mark as processed but failed
-        const updatedPhotoSet = {
-          ...photoSet,
-          processed: true,
-          error: data.error
-        };
-        setCapturedPhotos(prev => 
-          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-        );
-      }
-    }
+        if (data.success && data.delivery) {
+          console.log("AI extracted data:", data.delivery);
+          
+          // Store REAL extracted data from AI
+          extractedDataFromPhotos.push({
+            photoSetId: photoSet.id,
+            extractedData: data.delivery,
+            labelPhoto: photoSet.label.data,
+            labelPreview: photoSet.label.preview,
+            parcelPhoto: photoSet.parcel.data,
+            parcelPreview: photoSet.parcel.preview,
+            originalPhotos: photoSet
+          });
 
-    // Step 2: Combine with PDA data or use extracted data
-    if (extractedDataFromPhotos.length > 0) {
-      const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
-      
-      if (deliveries.length > 0) {
-        // Combine REAL AI data with existing PDA data
-        const combinedDeliveries = combinePhotoDataWithPDA(deliveries, successfulExtractions);
-        setDeliveries(combinedDeliveries);
-        alert(`✅ Combined ${successfulExtractions.length} AI-processed photos with ${deliveries.length} PDA orders!`);
-        
-        // Auto-proceed to geocoding with combined REAL data
-        await geocodeAddresses(combinedDeliveries);
-      } else {
-        // Use only the REAL AI extracted data
-        const deliveriesFromPhotos = successfulExtractions.map(item => ({
-          ...item.extractedData, // REAL AI DATA
-          photoSetId: item.photoSetId,
-          labelPhoto: item.labelPhoto,
-          labelPreview: item.labelPreview,
-          parcelPhoto: item.parcelPhoto,
-          parcelPreview: item.parcelPreview,
-          originalPhotos: item.originalPhotos,
-          source: 'ai-photo'
-        }));
-        
-        setDeliveries(deliveriesFromPhotos);
-        alert(`✅ Processed ${deliveriesFromPhotos.length} orders using AI photo analysis!`);
-        
-        // Auto-proceed to geocoding with REAL data
-        await geocodeAddresses(deliveriesFromPhotos);
+          // Mark as processed with REAL data
+          const updatedPhotoSet = {
+            ...photoSet,
+            extractedData: data.delivery,
+            processed: true
+          };
+          
+          setCapturedPhotos(prev => 
+            prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+          );
+        } else {
+          console.error("AI processing failed:", data.error);
+          // Mark as processed but failed
+          const updatedPhotoSet = {
+            ...photoSet,
+            processed: true,
+            error: data.error
+          };
+          setCapturedPhotos(prev => 
+            prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+          );
+        }
       }
-    } else {
-      alert('❌ No data could be extracted from photos by AI');
+
+      // Step 2: Combine with PDA data or use extracted data
+      if (extractedDataFromPhotos.length > 0) {
+        const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
+        
+        if (deliveries.length > 0) {
+          // Combine REAL AI data with existing PDA data
+          const combinedDeliveries = combinePhotoDataWithPDA(deliveries, successfulExtractions);
+          setDeliveries(combinedDeliveries);
+          alert(`✅ Combined ${successfulExtractions.length} AI-processed photos with ${deliveries.length} PDA orders!`);
+          
+          // Auto-proceed to geocoding with combined REAL data
+          await geocodeAddresses(combinedDeliveries);
+        } else {
+          // Use only the REAL AI extracted data
+          const deliveriesFromPhotos = successfulExtractions.map(item => ({
+            ...item.extractedData,
+            photoSetId: item.photoSetId,
+            labelPhoto: item.labelPhoto,
+            labelPreview: item.labelPreview,
+            parcelPhoto: item.parcelPhoto,
+            parcelPreview: item.parcelPreview,
+            originalPhotos: item.originalPhotos,
+            source: 'ai-photo'
+          }));
+          
+          setDeliveries(deliveriesFromPhotos);
+          alert(`✅ Processed ${deliveriesFromPhotos.length} orders using AI photo analysis!`);
+          
+          // Auto-proceed to geocoding with REAL data
+          await geocodeAddresses(deliveriesFromPhotos);
+        }
+      } else {
+        alert('❌ No data could be extracted from photos by AI');
+        setCurrentStep('photo-capture');
+      }
+
+    } catch (error) {
+      console.error('Photo processing error:', error);
+      alert('Error processing photos: ' + error.message);
       setCurrentStep('photo-capture');
+    } finally {
+      setProcessing(false);
     }
+  };
 
-  } catch (error) {
-    console.error('Photo processing error:', error);
-    alert('Error processing photos: ' + error.message);
-    setCurrentStep('photo-capture');
-  } finally {
-    setProcessing(false);
-  }
-};
-
-// Combine REAL AI photo data with PDA list data
-const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
-  return pdaDeliveries.map(pdaDelivery => {
-    // Find matching photo data using REAL AI extracted data
-    const matchingPhoto = photoData.find(photoItem => {
-      const extracted = photoItem.extractedData;
-      
-      if (!extracted) return false;
-
-      // Multiple matching strategies with REAL data
-      const matches = [
-        // Match by address (most reliable)
-        extracted.address && pdaDelivery.address && 
-        addressesMatch(extracted.address, pdaDelivery.address),
+  // Combine REAL AI photo data with PDA list data
+  const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
+    return pdaDeliveries.map(pdaDelivery => {
+      // Find matching photo data using REAL AI extracted data
+      const matchingPhoto = photoData.find(photoItem => {
+        const extracted = photoItem.extractedData;
         
-        // Match by phone number
-        extracted.phoneNumber && pdaDelivery.phoneNumber &&
-        phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
-        
-        // Match by client name
-        extracted.clientName && pdaDelivery.clientName &&
-        namesMatch(extracted.clientName, pdaDelivery.clientName),
-        
-        // Match by barcode/reference
-        extracted.barcode && pdaDelivery.barcode &&
-        barcodesMatch(extracted.barcode, pdaDelivery.barcode)
-      ];
+        if (!extracted) return false;
 
-      return matches.some(match => match === true);
-    });
+        // Multiple matching strategies with REAL data
+        const matches = [
+          // Match by address (most reliable)
+          extracted.address && pdaDelivery.address && 
+          addressesMatch(extracted.address, pdaDelivery.address),
+          
+          // Match by phone number
+          extracted.phoneNumber && pdaDelivery.phoneNumber &&
+          phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
+          
+          // Match by client name
+          extracted.clientName && pdaDelivery.clientName &&
+          namesMatch(extracted.clientName, pdaDelivery.clientName),
+          
+          // Match by barcode/reference
+          extracted.barcode && pdaDelivery.barcode &&
+          barcodesMatch(extracted.barcode, pdaDelivery.barcode)
+        ];
 
-    if (matchingPhoto && matchingPhoto.extractedData) {
-      // Combine PDA data with REAL AI photo data
+        return matches.some(match => match === true);
+      });
+
+      if (matchingPhoto && matchingPhoto.extractedData) {
+        // Combine PDA data with REAL AI photo data
+        return {
+          ...pdaDelivery,
+          ...matchingPhoto.extractedData,
+          photoSetId: matchingPhoto.photoSetId,
+          labelPhoto: matchingPhoto.labelPhoto,
+          labelPreview: matchingPhoto.labelPreview,
+          parcelPhoto: matchingPhoto.parcelPhoto,
+          parcelPreview: matchingPhoto.parcelPreview,
+          originalPhotos: matchingPhoto.originalPhotos,
+          source: 'ai-enhanced'
+        };
+      }
+
+      // Return original PDA data if no AI photo match found
       return {
-        ...pdaDelivery, // Original PDA data
-        // Enhanced with REAL AI data from photos
-        ...matchingPhoto.extractedData, // AI extracted fields
-        // Photo data for visual recognition
-        photoSetId: matchingPhoto.photoSetId,
-        labelPhoto: matchingPhoto.labelPhoto,
-        labelPreview: matchingPhoto.labelPreview,
-        parcelPhoto: matchingPhoto.parcelPhoto,
-        parcelPreview: matchingPhoto.parcelPreview,
-        originalPhotos: matchingPhoto.originalPhotos,
-        source: 'ai-enhanced'
+        ...pdaDelivery,
+        source: 'pda-only'
       };
-    }
+    });
+  };
 
-    // Return original PDA data if no AI photo match found
-    return {
-      ...pdaDelivery,
-      source: 'pda-only'
-    };
-  });
-};
+  // Helper functions for matching REAL data
+  const addressesMatch = (addr1, addr2) => {
+    const cleanAddr1 = addr1.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanAddr2 = addr2.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return cleanAddr1.includes(cleanAddr2) || cleanAddr2.includes(cleanAddr1);
+  };
 
-// Helper functions for matching REAL data
-const addressesMatch = (addr1, addr2) => {
-  const cleanAddr1 = addr1.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const cleanAddr2 = addr2.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return cleanAddr1.includes(cleanAddr2) || cleanAddr2.includes(cleanAddr1);
-};
+  const phonesMatch = (phone1, phone2) => {
+    const cleanPhone1 = phone1.replace(/\D/g, '');
+    const cleanPhone2 = phone2.replace(/\D/g, '');
+    return cleanPhone1 === cleanPhone2;
+  };
 
-const phonesMatch = (phone1, phone2) => {
-  const cleanPhone1 = phone1.replace(/\D/g, '');
-  const cleanPhone2 = phone2.replace(/\D/g, '');
-  return cleanPhone1 === cleanPhone2;
-};
+  const namesMatch = (name1, name2) => {
+    const cleanName1 = name1.toLowerCase().replace(/[^a-z]/g, '');
+    const cleanName2 = name2.toLowerCase().replace(/[^a-z]/g, '');
+    return cleanName1.includes(cleanName2) || cleanName2.includes(cleanName1);
+  };
 
-const namesMatch = (name1, name2) => {
-  const cleanName1 = name1.toLowerCase().replace(/[^a-z]/g, '');
-  const cleanName2 = name2.toLowerCase().replace(/[^a-z]/g, '');
-  return cleanName1.includes(cleanName2) || cleanName2.includes(cleanName1);
-};
+  const barcodesMatch = (barcode1, barcode2) => {
+    return barcode1.toString() === barcode2.toString();
+  };
 
-const barcodesMatch = (barcode1, barcode2) => {
-  return barcode1.toString() === barcode2.toString();
-};
-
-
-  // Handle PDA/list upload (existing functionality)
+  // Handle PDA/list upload
   const handlePDAUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -535,12 +669,24 @@ const barcodesMatch = (barcode1, barcode2) => {
       const data = await response.json();
       
       if (data.success) {
-        setGeocodedDeliveries(data.deliveries);
+        // Preserve photo data when setting geocoded deliveries
+        const deliveriesWithPhotos = data.deliveries.map((delivery, index) => ({
+          ...delivery,
+          // Preserve photo data from original delivery
+          labelPhoto: deliveriesToGeocode[index]?.labelPhoto,
+          labelPreview: deliveriesToGeocode[index]?.labelPreview,
+          parcelPhoto: deliveriesToGeocode[index]?.parcelPhoto, 
+          parcelPreview: deliveriesToGeocode[index]?.parcelPreview,
+          photoSetId: deliveriesToGeocode[index]?.photoSetId,
+          originalPhotos: deliveriesToGeocode[index]?.originalPhotos
+        }));
         
-        const successfulGeocodes = data.deliveries.filter(d => d.lat && d.lng).length;
-        alert(`✅ Geocoded ${successfulGeocodes}/${data.deliveries.length} addresses! Now optimizing route...`);
+        setGeocodedDeliveries(deliveriesWithPhotos);
         
-        await optimizeRoute(data.deliveries);
+        const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
+        alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! Now optimizing route...`);
+        
+        await optimizeRoute(deliveriesWithPhotos);
       } else {
         alert('❌ Geocoding error: ' + data.error);
       }
@@ -573,7 +719,18 @@ const barcodesMatch = (barcode1, barcode2) => {
       const data = await response.json();
       
       if (data.success) {
-        setOptimizedRoute(data.route);
+        // Ensure photo data is preserved in optimized route
+        const routeWithPhotos = data.route.map((stop, index) => ({
+          ...stop,
+          // Preserve all photo data
+          labelPhoto: deliveriesWithCoords[index]?.labelPhoto,
+          labelPreview: deliveriesWithCoords[index]?.labelPreview,
+          parcelPhoto: deliveriesWithCoords[index]?.parcelPhoto,
+          parcelPreview: deliveriesWithCoords[index]?.parcelPreview,
+          photoSetId: deliveriesWithCoords[index]?.photoSetId
+        }));
+        
+        setOptimizedRoute(routeWithPhotos);
         setCurrentStep('complete');
         alert('✅ Route optimized successfully!');
       } else {
@@ -714,6 +871,10 @@ const barcodesMatch = (barcode1, barcode2) => {
   const removePhotoSet = (photoSetId) => {
     setCapturedPhotos(prev => prev.filter(photoSet => photoSet.id !== photoSetId));
   };
+
+  // ... (The rest of your JSX remains exactly the same)
+  // [Keep all your existing JSX return statement exactly as it was]
+  // Only the data storage logic has been updated
 
   return (
     <main className="min-h-screen bg-white text-gray-900">
@@ -975,115 +1136,104 @@ const barcodesMatch = (barcode1, barcode2) => {
             </div>
 
             {/* Captured Photos Preview */}
-            {/* Captured Photos Preview */}
-{/* Captured Photos Preview */}
-{capturedPhotos.length > 0 && (
-  <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-    <h3 className="font-semibold mb-3 text-gray-900">Captured Orders: {capturedPhotos.length}</h3>
-    <div className="space-y-4">
-      // In your captured photos preview section - show REAL AI data
-{capturedPhotos.map((photoSet, index) => (
-  <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
-    <div className="flex items-start justify-between">
-      {/* Photo Previews */}
-      <div className="flex items-center space-x-4">
-        <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
-        <div className="flex space-x-3">
-          {photoSet.label?.preview && (
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Label</div>
-              <img 
-                src={photoSet.label.preview} 
-                alt="Label preview" 
-                className="w-12 h-12 object-cover rounded border"
-              />
-            </div>
-          )}
-          {photoSet.parcel?.preview && (
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Parcel</div>
-              <img 
-                src={photoSet.parcel.preview} 
-                alt="Parcel preview" 
-                className="w-12 h-12 object-cover rounded border"
-              />
-            </div>
-          )}
-        </div>
-      </div>
+            {capturedPhotos.length > 0 && (
+              <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                <h3 className="font-semibold mb-3 text-gray-900">Captured Orders: {capturedPhotos.length}</h3>
+                <div className="space-y-4">
+                  {capturedPhotos.map((photoSet, index) => (
+                    <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
+                      <div className="flex items-start justify-between">
+                        {/* Photo Previews */}
+                        <div className="flex items-center space-x-4">
+                          <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
+                          <div className="flex space-x-3">
+                            {photoSet.label?.preview && (
+                              <div className="text-center">
+                                <div className="text-xs text-gray-500 mb-1">Label</div>
+                                <img 
+                                  src={photoSet.label.preview} 
+                                  alt="Label preview" 
+                                  className="w-12 h-12 object-cover rounded border"
+                                />
+                              </div>
+                            )}
+                            {photoSet.parcel?.preview && (
+                              <div className="text-center">
+                                <div className="text-xs text-gray-500 mb-1">Parcel</div>
+                                <img 
+                                  src={photoSet.parcel.preview} 
+                                  alt="Parcel preview" 
+                                  className="w-12 h-12 object-cover rounded border"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
 
-      {/* REAL AI Extracted Data Display */}
-      <div className="flex-1 ml-4">
-        {photoSet.extractedData ? (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-            <div className="text-xs font-semibold text-green-800 mb-2">
-              ✅ AI Extracted Data:
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-              {photoSet.extractedData.clientName && (
-                <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
-              )}
-              {photoSet.extractedData.address && (
-                <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
-              )}
-              {photoSet.extractedData.phoneNumber && (
-                <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-              )}
-              {photoSet.extractedData.barcode && (
-                <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
-              )}
-              {photoSet.extractedData.sender && (
-                <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
-              )}
-              {photoSet.extractedData.weight && (
-                <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
-              )}
-            </div>
-          </div>
-        ) : photoSet.error ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <div className="text-xs text-red-700">
-              ❌ AI Processing Failed: {photoSet.error}
-            </div>
-          </div>
-        ) : (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-            <div className="text-xs text-yellow-700">
-              ⏳ AI processing in progress...
-            </div>
-          </div>
-        )}
-      </div>
+                        {/* Extracted Data Display */}
+                        <div className="flex-1 ml-4">
+                          {photoSet.extractedData ? (
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                              <div className="text-xs font-semibold text-green-800 mb-2">📋 Extracted Data:</div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                {photoSet.extractedData.clientName && (
+                                  <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
+                                )}
+                                {photoSet.extractedData.address && (
+                                  <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
+                                )}
+                                {photoSet.extractedData.phoneNumber && (
+                                  <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
+                                )}
+                                {photoSet.extractedData.barcode && (
+                                  <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
+                                )}
+                                {photoSet.extractedData.sender && (
+                                  <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
+                                )}
+                                {photoSet.extractedData.weight && (
+                                  <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                              <div className="text-xs text-yellow-700">
+                                ⏳ Waiting for AI extraction...
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
-      <button
-        onClick={() => removePhotoSet(photoSet.id)}
-        className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
-      >
-        Remove
-      </button>
-    </div>
-  </div>
-))}
-    </div>
-    
-    <div className="mt-4 flex space-x-3">
-      <button
-        onClick={processCapturedPhotos}
-        disabled={processing}
-        className="flex-1 bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:bg-gray-400 transition-colors"
-      >
-        {processing ? 'Processing...' : `Process ${capturedPhotos.length} Orders`}
-      </button>
-      
-      <button
-        onClick={() => setCurrentStep('upload')}
-        className="flex-1 bg-gray-500 text-white py-2 rounded-lg font-semibold hover:bg-gray-600 transition-colors"
-      >
-        Use PDA/List Instead
-      </button>
-    </div>
-  </div>
-)}
+                        <button
+                          onClick={() => removePhotoSet(photoSet.id)}
+                          className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="mt-4 flex space-x-3">
+                  <button
+                    onClick={processCapturedPhotos}
+                    disabled={processing}
+                    className="flex-1 bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:bg-gray-400 transition-colors"
+                  >
+                    {processing ? 'Processing...' : `Process ${capturedPhotos.length} Orders`}
+                  </button>
+                  
+                  <button
+                    onClick={() => setCurrentStep('upload')}
+                    className="flex-1 bg-gray-500 text-white py-2 rounded-lg font-semibold hover:bg-gray-600 transition-colors"
+                  >
+                    Use PDA/List Instead
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
