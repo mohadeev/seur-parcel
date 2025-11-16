@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react'
+const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL
 
 // IndexedDB Utility
 class SeurDB {
@@ -483,7 +484,7 @@ const processCapturedPhotos = async () => {
         }
 
         // STEP 2: Send extracted text to our server for AI processing
-        const aiResponse = await fetch('/api/process-order-text', {
+        const aiResponse = await fetch(SERVER_URL+'/api/process-order-text', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -724,69 +725,67 @@ const handlePDAUpload = async (event) => {
   setCurrentStep('upload');
   
   try {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64 = reader.result;
-      
-      console.log("Sending PDA list + photo data to server for processing...");
+    // Create FormData for file upload
+    const formData = new FormData();
+    formData.append('pdaImage', file);
 
-      // Prepare photo data to send to server
-      const photoDataForServer = capturedPhotos.map(photoSet => ({
-        photoSetId: photoSet.id,
-        extractedData: photoSet.extractedData,
-        labelPhoto: photoSet.label?.data,
-        labelPreview: photoSet.label?.preview,
-        parcelPhoto: photoSet.parcel?.data,
-        parcelPreview: photoSet.parcel?.preview,
-        originalPhotos: photoSet,
-        ocrText: photoSet.ocrText,
-        ocrConfidence: photoSet.ocrConfidence
-      }));
+    // Prepare photo metadata ONLY (no binary data)
+    const photoDataForServer = capturedPhotos.map(photoSet => ({
+      photoSetId: photoSet.id,
+      extractedData: photoSet.extractedData,
+      ocrText: photoSet.ocrText,
+      ocrConfidence: photoSet.ocrConfidence
+    }));
 
-      console.log(`Sending ${photoDataForServer.length} photos to server for matching`);
+    // Add photo metadata to FormData
+    formData.append('photoData', JSON.stringify(photoDataForServer));
 
-      // Send to SERVER for PDA list extraction WITH PHOTO DATA
-      const response = await fetch('/api/process-orders', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          imageBase64: base64,
-          photoData: photoDataForServer // ✅ NOW sending photo data
-        }),
+    // Send to HEROKU SERVER for PDA list extraction with FILE UPLOAD
+    const response = await fetch(`${SERVER_URL}/api/process-orders`, {
+      method: 'POST',
+      body: formData, // No Content-Type header for FormData
+    });
+
+    const data = await response.json();
+    
+    if (data.success) {
+      // Client-side - Add photo binary data back to matched deliveries
+      const deliveriesWithPhotos = data.deliveries.map(delivery => {
+        if (delivery.source === 'photo-enhanced' && delivery.photoSetId) {
+          const originalPhotoSet = capturedPhotos.find(ps => ps.id === delivery.photoSetId);
+          if (originalPhotoSet) {
+            return {
+              ...delivery,
+              labelPhoto: originalPhotoSet.label?.data,
+              labelPreview: originalPhotoSet.label?.preview,
+              parcelPhoto: originalPhotoSet.parcel?.data,
+              parcelPreview: originalPhotoSet.parcel?.preview,
+              originalPhotos: originalPhotoSet
+            };
+          }
+        }
+        return delivery;
       });
 
-      const data = await response.json();
+      setDeliveries(deliveriesWithPhotos);
       
-      if (data.success) {
-        console.log(`Server extracted ${data.deliveries.length} deliveries, ${data.matchedCount} with photos`);
-        
-        // Set the deliveries directly (server already did the matching)
-        setDeliveries(data.deliveries);
-        
-        // Count how many deliveries have photos
-        const deliveriesWithPhotos = data.deliveries.filter(d => d.labelPhoto).length;
-        
-        alert(`✅ SERVER: Processed ${data.extractedCount} orders, ${data.matchedCount} matched with photos! ${deliveriesWithPhotos} stops will show photos. Now geocoding addresses...`);
-        
-        await geocodeAddresses(data.deliveries);
-      } else {
-        alert('❌ SERVER PDA Processing Error: ' + data.error);
-        setCurrentStep('upload'); // Stay on upload step to retry
-      }
-    };
-    
-    reader.readAsDataURL(file);
+      const deliveriesWithBinaryPhotos = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
+      alert(`✅ HEROKU SERVER: Processed ${data.extractedCount} orders, ${data.matchedCount} matched with photos! ${deliveriesWithBinaryPhotos} stops will show photos. Now geocoding addresses...`);
+      
+      await geocodeAddresses(deliveriesWithPhotos);
+    } else {
+      alert('❌ HEROKU SERVER PDA Processing Error: ' + data.error);
+      setCurrentStep('upload');
+    }
     
   } catch (error) {
-    console.error('PDA Upload error:', error);
     alert('Error uploading PDA list: ' + error.message);
     setCurrentStep('upload');
   } finally {
     setProcessing(false);
   }
 };
+
 const geocodeAddresses = async (deliveriesToGeocode) => {
   if (deliveriesToGeocode.length === 0) return;
   
@@ -794,7 +793,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
   setCurrentStep('geocoding');
   
   try {
-    const response = await fetch('/api/geocode-addresses', {
+    const response = await fetch(SERVER_URL+'/api/geocode-addresses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -860,7 +859,7 @@ const optimizeRoute = async (deliveriesWithCoords) => {
   setCurrentStep('optimizing');
   
   try {
-    const response = await fetch('/api/optimize-route', {
+    const response = await fetch(SERVER_URL+'/api/optimize-route', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
