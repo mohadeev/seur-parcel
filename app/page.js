@@ -2,13 +2,21 @@
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense } from 'react'
 
+export default function Home() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <HomeContent />
+    </Suspense>
+  )
+}
 const RouteMap = dynamic(() => import('./components/RouteMap'), {
   ssr: false,
   loading: () => <div className="h-64 md:h-96 bg-gray-100 rounded-lg flex items-center justify-center text-gray-600">Loading map...</div>
 });
 
-export default function Home() {
+function HomeContent() {
   const [deliveries, setDeliveries] = useState([]);
   const [geocodedDeliveries, setGeocodedDeliveries] = useState([]);
   const [optimizedRoute, setOptimizedRoute] = useState([]);
