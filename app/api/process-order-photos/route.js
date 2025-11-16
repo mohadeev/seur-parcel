@@ -51,6 +51,7 @@ export async function POST(request) {
     const jsonMatch = content.match(/\{.*\}/s);
     if (jsonMatch) {
       const delivery = JSON.parse(jsonMatch[0]);
+      console.log("delivery: " , delivery)
       return NextResponse.json({ success: true, delivery });
     } else {
       return NextResponse.json({ success: false, error: "No data found", raw: content });

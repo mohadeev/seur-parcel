@@ -276,6 +276,7 @@ function HomeContent() {
 
   // Process captured photos with AI
  // Process captured photos with AI
+// Process captured photos with AI
 const processCapturedPhotos = async () => {
   if (capturedPhotos.length === 0) return;
 
@@ -284,11 +285,15 @@ const processCapturedPhotos = async () => {
 
   try {
     const processedOrders = [];
+    const extractedDataFromPhotos = [];
 
+    // Step 1: Extract REAL data from all photos using OpenAI
     for (const photoSet of capturedPhotos) {
       if (photoSet.processed) continue;
 
-      // Send both photos to AI for processing
+      console.log("Processing photo set:", photoSet.id);
+
+      // Send BOTH photos to OpenAI for data extraction
       const response = await fetch('/api/process-order-photos', {
         method: 'POST',
         headers: {
@@ -303,46 +308,167 @@ const processCapturedPhotos = async () => {
       const data = await response.json();
       
       if (data.success && data.delivery) {
-        // Update the photoSet with extracted data immediately
-        const updatedPhotoSet = {
-          ...photoSet,
-          extractedData: data.delivery,
-          processed: true
-        };
+        console.log("AI extracted data:", data.delivery);
         
-        // Update the capturedPhotos state to show the data immediately
-        setCapturedPhotos(prev => 
-          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-        );
-
-        processedOrders.push({
-          ...data.delivery,
+        // Store REAL extracted data from AI
+        extractedDataFromPhotos.push({
           photoSetId: photoSet.id,
+          extractedData: data.delivery, // REAL AI DATA
           labelPhoto: photoSet.label.data,
           labelPreview: photoSet.label.preview,
           parcelPhoto: photoSet.parcel.data,
           parcelPreview: photoSet.parcel.preview,
           originalPhotos: photoSet
         });
+
+        // Mark as processed with REAL data
+        const updatedPhotoSet = {
+          ...photoSet,
+          extractedData: data.delivery, // REAL AI DATA
+          processed: true
+        };
+        
+        setCapturedPhotos(prev => 
+          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+        );
+      } else {
+        console.error("AI processing failed:", data.error);
+        // Mark as processed but failed
+        const updatedPhotoSet = {
+          ...photoSet,
+          processed: true,
+          error: data.error
+        };
+        setCapturedPhotos(prev => 
+          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+        );
       }
     }
 
-    if (processedOrders.length > 0) {
-      setDeliveries(processedOrders);
-      setCurrentStep('upload');
-      alert(`✅ Processed ${processedOrders.length} orders from photos!`);
+    // Step 2: Combine with PDA data or use extracted data
+    if (extractedDataFromPhotos.length > 0) {
+      const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
+      
+      if (deliveries.length > 0) {
+        // Combine REAL AI data with existing PDA data
+        const combinedDeliveries = combinePhotoDataWithPDA(deliveries, successfulExtractions);
+        setDeliveries(combinedDeliveries);
+        alert(`✅ Combined ${successfulExtractions.length} AI-processed photos with ${deliveries.length} PDA orders!`);
+        
+        // Auto-proceed to geocoding with combined REAL data
+        await geocodeAddresses(combinedDeliveries);
+      } else {
+        // Use only the REAL AI extracted data
+        const deliveriesFromPhotos = successfulExtractions.map(item => ({
+          ...item.extractedData, // REAL AI DATA
+          photoSetId: item.photoSetId,
+          labelPhoto: item.labelPhoto,
+          labelPreview: item.labelPreview,
+          parcelPhoto: item.parcelPhoto,
+          parcelPreview: item.parcelPreview,
+          originalPhotos: item.originalPhotos,
+          source: 'ai-photo'
+        }));
+        
+        setDeliveries(deliveriesFromPhotos);
+        alert(`✅ Processed ${deliveriesFromPhotos.length} orders using AI photo analysis!`);
+        
+        // Auto-proceed to geocoding with REAL data
+        await geocodeAddresses(deliveriesFromPhotos);
+      }
     } else {
-      alert('❌ No orders could be processed from photos');
+      alert('❌ No data could be extracted from photos by AI');
       setCurrentStep('photo-capture');
     }
 
   } catch (error) {
+    console.error('Photo processing error:', error);
     alert('Error processing photos: ' + error.message);
     setCurrentStep('photo-capture');
   } finally {
     setProcessing(false);
   }
 };
+
+// Combine REAL AI photo data with PDA list data
+const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
+  return pdaDeliveries.map(pdaDelivery => {
+    // Find matching photo data using REAL AI extracted data
+    const matchingPhoto = photoData.find(photoItem => {
+      const extracted = photoItem.extractedData;
+      
+      if (!extracted) return false;
+
+      // Multiple matching strategies with REAL data
+      const matches = [
+        // Match by address (most reliable)
+        extracted.address && pdaDelivery.address && 
+        addressesMatch(extracted.address, pdaDelivery.address),
+        
+        // Match by phone number
+        extracted.phoneNumber && pdaDelivery.phoneNumber &&
+        phonesMatch(extracted.phoneNumber, pdaDelivery.phoneNumber),
+        
+        // Match by client name
+        extracted.clientName && pdaDelivery.clientName &&
+        namesMatch(extracted.clientName, pdaDelivery.clientName),
+        
+        // Match by barcode/reference
+        extracted.barcode && pdaDelivery.barcode &&
+        barcodesMatch(extracted.barcode, pdaDelivery.barcode)
+      ];
+
+      return matches.some(match => match === true);
+    });
+
+    if (matchingPhoto && matchingPhoto.extractedData) {
+      // Combine PDA data with REAL AI photo data
+      return {
+        ...pdaDelivery, // Original PDA data
+        // Enhanced with REAL AI data from photos
+        ...matchingPhoto.extractedData, // AI extracted fields
+        // Photo data for visual recognition
+        photoSetId: matchingPhoto.photoSetId,
+        labelPhoto: matchingPhoto.labelPhoto,
+        labelPreview: matchingPhoto.labelPreview,
+        parcelPhoto: matchingPhoto.parcelPhoto,
+        parcelPreview: matchingPhoto.parcelPreview,
+        originalPhotos: matchingPhoto.originalPhotos,
+        source: 'ai-enhanced'
+      };
+    }
+
+    // Return original PDA data if no AI photo match found
+    return {
+      ...pdaDelivery,
+      source: 'pda-only'
+    };
+  });
+};
+
+// Helper functions for matching REAL data
+const addressesMatch = (addr1, addr2) => {
+  const cleanAddr1 = addr1.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cleanAddr2 = addr2.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return cleanAddr1.includes(cleanAddr2) || cleanAddr2.includes(cleanAddr1);
+};
+
+const phonesMatch = (phone1, phone2) => {
+  const cleanPhone1 = phone1.replace(/\D/g, '');
+  const cleanPhone2 = phone2.replace(/\D/g, '');
+  return cleanPhone1 === cleanPhone2;
+};
+
+const namesMatch = (name1, name2) => {
+  const cleanName1 = name1.toLowerCase().replace(/[^a-z]/g, '');
+  const cleanName2 = name2.toLowerCase().replace(/[^a-z]/g, '');
+  return cleanName1.includes(cleanName2) || cleanName2.includes(cleanName1);
+};
+
+const barcodesMatch = (barcode1, barcode2) => {
+  return barcode1.toString() === barcode2.toString();
+};
+
 
   // Handle PDA/list upload (existing functionality)
   const handlePDAUpload = async (event) => {
@@ -850,74 +976,94 @@ const processCapturedPhotos = async () => {
 
             {/* Captured Photos Preview */}
             {/* Captured Photos Preview */}
+{/* Captured Photos Preview */}
 {capturedPhotos.length > 0 && (
   <div className="mt-6 p-4 bg-gray-50 rounded-lg">
     <h3 className="font-semibold mb-3 text-gray-900">Captured Orders: {capturedPhotos.length}</h3>
     <div className="space-y-4">
-      {capturedPhotos.map((photoSet, index) => (
-        <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
-          {/* Show extracted data for ALL orders */}
-          {photoSet.extractedData && (
-            <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
-              <div className="text-sm font-semibold text-gray-900 mb-2">📋 Extracted from Label:</div>
-              <div className="space-y-1 text-sm">
-                {photoSet.extractedData.clientName && (
-                  <div><span className="font-medium">Name:</span> {photoSet.extractedData.clientName}</div>
-                )}
-                {photoSet.extractedData.address && (
-                  <div><span className="font-medium">Address:</span> {photoSet.extractedData.address}</div>
-                )}
-                {photoSet.extractedData.phoneNumber && (
-                  <div><span className="font-medium">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-                )}
-                {photoSet.extractedData.barcode && (
-                  <div><span className="font-medium">Barcode:</span> {photoSet.extractedData.barcode}</div>
-                )}
-                {photoSet.extractedData.sender && (
-                  <div><span className="font-medium">Sender:</span> {photoSet.extractedData.sender}</div>
-                )}
-                {photoSet.extractedData.weight && (
-                  <div><span className="font-medium">Weight:</span> {photoSet.extractedData.weight}</div>
-                )}
-              </div>
+      // In your captured photos preview section - show REAL AI data
+{capturedPhotos.map((photoSet, index) => (
+  <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
+    <div className="flex items-start justify-between">
+      {/* Photo Previews */}
+      <div className="flex items-center space-x-4">
+        <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
+        <div className="flex space-x-3">
+          {photoSet.label?.preview && (
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Label</div>
+              <img 
+                src={photoSet.label.preview} 
+                alt="Label preview" 
+                className="w-12 h-12 object-cover rounded border"
+              />
             </div>
           )}
-          
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
-              <div className="flex space-x-3">
-                {photoSet.label?.preview && (
-                  <div className="text-center">
-                    <div className="text-xs text-gray-500 mb-1">Label</div>
-                    <img 
-                      src={photoSet.label.preview} 
-                      alt="Label preview" 
-                      className="w-12 h-12 object-cover rounded border"
-                    />
-                  </div>
-                )}
-                {photoSet.parcel?.preview && (
-                  <div className="text-center">
-                    <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                    <img 
-                      src={photoSet.parcel.preview} 
-                      alt="Parcel preview" 
-                      className="w-12 h-12 object-cover rounded border"
-                    />
-                  </div>
-                )}
-              </div>
+          {photoSet.parcel?.preview && (
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Parcel</div>
+              <img 
+                src={photoSet.parcel.preview} 
+                alt="Parcel preview" 
+                className="w-12 h-12 object-cover rounded border"
+              />
             </div>
-            <button
-              onClick={() => removePhotoSet(photoSet.id)}
-              className="text-red-500 hover:text-red-700 text-sm font-medium"
-            >
-              Remove
-            </button>
-          </div>
+          )}
         </div>
-      ))}
+      </div>
+
+      {/* REAL AI Extracted Data Display */}
+      <div className="flex-1 ml-4">
+        {photoSet.extractedData ? (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+            <div className="text-xs font-semibold text-green-800 mb-2">
+              ✅ AI Extracted Data:
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+              {photoSet.extractedData.clientName && (
+                <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
+              )}
+              {photoSet.extractedData.address && (
+                <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
+              )}
+              {photoSet.extractedData.phoneNumber && (
+                <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
+              )}
+              {photoSet.extractedData.barcode && (
+                <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
+              )}
+              {photoSet.extractedData.sender && (
+                <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
+              )}
+              {photoSet.extractedData.weight && (
+                <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
+              )}
+            </div>
+          </div>
+        ) : photoSet.error ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="text-xs text-red-700">
+              ❌ AI Processing Failed: {photoSet.error}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+            <div className="text-xs text-yellow-700">
+              ⏳ AI processing in progress...
+            </div>
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={() => removePhotoSet(photoSet.id)}
+        className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
+      >
+        Remove
+      </button>
+    </div>
+  </div>
+))}
     </div>
     
     <div className="mt-4 flex space-x-3">
