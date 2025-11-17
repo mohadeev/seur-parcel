@@ -206,6 +206,7 @@ function HomeContent() {
 
   // Load data from IndexedDB
 // Load data from IndexedDB
+// Load data from IndexedDB - FIXED
 useEffect(() => {
   if (!dbReady) return;
 
@@ -231,8 +232,18 @@ useEffect(() => {
         const allRoutes = await seurDB.getAllRoutes();
         setSavedRoutes(allRoutes);
 
-        // Check if we have optimized route data and set to complete
-        if (optimizedRoute.length > 0) {
+        // Check if we have any routes with optimized data
+        const currentRoute = allRoutes.find(route => 
+          route.optimizedRoute && route.optimizedRoute.length > 0
+        );
+        
+        if (currentRoute) {
+          setDeliveries(currentRoute.deliveries || []);
+          setGeocodedDeliveries(currentRoute.geocodedDeliveries || []);
+          setOptimizedRoute(currentRoute.optimizedRoute);
+          if (currentRoute.photos) {
+            setCapturedPhotos(currentRoute.photos);
+          }
           setCurrentStep('complete');
         }
       }
@@ -242,7 +253,12 @@ useEffect(() => {
   };
 
   loadData();
-}, [dbReady, routeId, optimizedRoute.length]); // Added optimizedRoute.length dependency
+}, [dbReady, routeId]); // Remove optimizedRoute.length dependency
+useEffect(() => {
+  if (optimizedRoute.length > 0 && currentStep !== 'complete') {
+    setCurrentStep('complete');
+  }
+}, [optimizedRoute.length, currentStep]);
 
   // Save photos to IndexedDB
   useEffect(() => {
@@ -308,7 +324,6 @@ const createNewRoute = async () => {
       geocodedDeliveries: geocodedDeliveries,
       optimizedRoute: optimizedRoute,
       photos: capturedPhotos,
-      currentStep: 'complete', // Save the current step
       createdAt: new Date().toISOString()
     };
     
@@ -717,6 +732,7 @@ const levenshteinDistance = (str1, str2) => {
   // Handle PDA/list upload and match with photos
  // Handle PDA/list upload and match with photos
 // Handle PDA/list upload - SERVER-SIDE processing
+// Handle PDA/list upload - SERVER-SIDE processing with PHOTO DATA
 const handlePDAUpload = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -729,7 +745,7 @@ const handlePDAUpload = async (event) => {
     const formData = new FormData();
     formData.append('pdaImage', file);
 
-    // Prepare photo metadata ONLY (no binary data)
+    // Prepare photo metadata (extracted data only, no binary images)
     const photoDataForServer = capturedPhotos.map(photoSet => ({
       photoSetId: photoSet.id,
       extractedData: photoSet.extractedData,
@@ -740,7 +756,9 @@ const handlePDAUpload = async (event) => {
     // Add photo metadata to FormData
     formData.append('photoData', JSON.stringify(photoDataForServer));
 
-    // Send to HEROKU SERVER for PDA list extraction with FILE UPLOAD
+    console.log(`Sending ${photoDataForServer.length} photo sets to server for matching`);
+
+    // Send to HEROKU SERVER for PDA list extraction with PHOTO MATCHING
     const response = await fetch(`${SERVER_URL}/api/process-orders`, {
       method: 'POST',
       body: formData, // No Content-Type header for FormData
@@ -756,6 +774,7 @@ const handlePDAUpload = async (event) => {
           if (originalPhotoSet) {
             return {
               ...delivery,
+              // Add binary photo data for display
               labelPhoto: originalPhotoSet.label?.data,
               labelPreview: originalPhotoSet.label?.preview,
               parcelPhoto: originalPhotoSet.parcel?.data,
@@ -769,8 +788,10 @@ const handlePDAUpload = async (event) => {
 
       setDeliveries(deliveriesWithPhotos);
       
+      const matchedCount = data.matchedCount || 0;
       const deliveriesWithBinaryPhotos = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
-      alert(`✅ HEROKU SERVER: Processed ${data.extractedCount} orders, ${data.matchedCount} matched with photos! ${deliveriesWithBinaryPhotos} stops will show photos. Now geocoding addresses...`);
+      
+      alert(`✅ HEROKU SERVER: Processed ${data.extractedCount} PDA orders, ${matchedCount} matched with ${data.photoCount} photos! ${deliveriesWithBinaryPhotos} stops will show photos. Now geocoding addresses...`);
       
       await geocodeAddresses(deliveriesWithPhotos);
     } else {
@@ -793,13 +814,39 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
   setCurrentStep('geocoding');
   
   try {
+    // Create a clean version WITHOUT binary image data for geocoding
+    const cleanDeliveriesForGeocoding = deliveriesToGeocode.map(delivery => ({
+      // Only send essential data needed for geocoding
+      clientName: delivery.clientName,
+      address: delivery.address,
+      phoneNumber: delivery.phoneNumber,
+      barcode: delivery.barcode,
+      sender: delivery.sender,
+      weight: delivery.weight,
+      source: delivery.source,
+      matchConfidence: delivery.matchConfidence,
+      enhancedAddress: delivery.enhancedAddress,
+      photoAddress: delivery.photoAddress,
+      // DO NOT send binary image data
+      // photoSetId: delivery.photoSetId, // Keep this to match later
+      // ocrText: delivery.ocrText, // Too large
+      // ocrConfidence: delivery.ocrConfidence,
+      // labelPhoto: delivery.labelPhoto, // REMOVE - too large
+      // labelPreview: delivery.labelPreview, // REMOVE
+      // parcelPhoto: delivery.parcelPhoto, // REMOVE - too large
+      // parcelPreview: delivery.parcelPreview, // REMOVE
+      // originalPhotos: delivery.originalPhotos // REMOVE - too large
+    }));
+
+    console.log("Sending clean deliveries for geocoding:", cleanDeliveriesForGeocoding.length);
+    
     const response = await fetch(SERVER_URL+'/api/geocode-addresses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ 
-        addresses: deliveriesToGeocode,
+        addresses: cleanDeliveriesForGeocoding, // Send clean data without images
         depot: seurDepot
       }),
     });
@@ -807,11 +854,11 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
     const data = await response.json();
     
     if (data.success) {
-      // PRESERVE ALL PHOTO DATA when setting geocoded deliveries
-      const deliveriesWithPhotos = data.deliveries.map((delivery, index) => {
+      // RECOMBINE geocoded data with original photo data
+      const deliveriesWithPhotos = data.deliveries.map((geocodedDelivery, index) => {
         const originalDelivery = deliveriesToGeocode[index];
         return {
-          ...delivery, // Geocoded data (lat, lng, etc.)
+          ...geocodedDelivery, // Geocoded data (lat, lng, placeName, etc.)
           // PRESERVE ALL original data including photos
           clientName: originalDelivery.clientName,
           address: originalDelivery.address,
@@ -819,7 +866,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
           barcode: originalDelivery.barcode,
           sender: originalDelivery.sender,
           weight: originalDelivery.weight,
-          // PRESERVE PHOTO DATA
+          // PRESERVE PHOTO DATA from original
           photoSetId: originalDelivery.photoSetId,
           labelPhoto: originalDelivery.labelPhoto,
           labelPreview: originalDelivery.labelPreview,
@@ -829,7 +876,9 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
           ocrText: originalDelivery.ocrText,
           ocrConfidence: originalDelivery.ocrConfidence,
           source: originalDelivery.source,
-          matchConfidence: originalDelivery.matchConfidence
+          matchConfidence: originalDelivery.matchConfidence,
+          enhancedAddress: originalDelivery.enhancedAddress,
+          photoAddress: originalDelivery.photoAddress
         };
       });
       
@@ -859,13 +908,42 @@ const optimizeRoute = async (deliveriesWithCoords) => {
   setCurrentStep('optimizing');
   
   try {
+    // Create clean version WITHOUT binary image data for optimization
+    const cleanDeliveriesForOptimization = deliveriesWithCoords.map(delivery => ({
+      // Only send essential data needed for optimization
+      clientName: delivery.clientName,
+      address: delivery.address,
+      phoneNumber: delivery.phoneNumber,
+      barcode: delivery.barcode,
+      sender: delivery.sender,
+      weight: delivery.weight,
+      source: delivery.source,
+      matchConfidence: delivery.matchConfidence,
+      enhancedAddress: delivery.enhancedAddress,
+      photoAddress: delivery.photoAddress,
+      lat: delivery.lat,
+      lng: delivery.lng,
+      placeName: delivery.placeName,
+      // DO NOT send binary image data
+      // photoSetId: delivery.photoSetId,
+      // ocrText: delivery.ocrText,
+      // ocrConfidence: delivery.ocrConfidence,
+      // labelPhoto: delivery.labelPhoto, // REMOVE - too large
+      // labelPreview: delivery.labelPreview, // REMOVE
+      // parcelPhoto: delivery.parcelPhoto, // REMOVE - too large
+      // parcelPreview: delivery.parcelPreview, // REMOVE
+      // originalPhotos: delivery.originalPhotos // REMOVE - too large
+    }));
+
+    console.log("Sending clean deliveries for optimization:", cleanDeliveriesForOptimization.length);
+    
     const response = await fetch(SERVER_URL+'/api/optimize-route', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ 
-        deliveries: deliveriesWithCoords,
+        deliveries: cleanDeliveriesForOptimization, // Send clean data without images
         depot: seurDepot
       }),
     });
@@ -873,11 +951,11 @@ const optimizeRoute = async (deliveriesWithCoords) => {
     const data = await response.json();
     
     if (data.success) {
-      // Ensure ALL photo data is preserved in optimized route
-      const routeWithPhotos = data.route.map((stop, index) => {
+      // RECOMBINE optimized data with original photo data
+      const routeWithPhotos = data.route.map((optimizedStop, index) => {
         const originalDelivery = deliveriesWithCoords[index];
         return {
-          ...stop, // Optimized route data
+          ...optimizedStop, // Optimized route data
           // PRESERVE ALL original data including photos
           clientName: originalDelivery.clientName,
           address: originalDelivery.address,
@@ -895,7 +973,9 @@ const optimizeRoute = async (deliveriesWithCoords) => {
           ocrText: originalDelivery.ocrText,
           ocrConfidence: originalDelivery.ocrConfidence,
           source: originalDelivery.source,
-          matchConfidence: originalDelivery.matchConfidence
+          matchConfidence: originalDelivery.matchConfidence,
+          enhancedAddress: originalDelivery.enhancedAddress,
+          photoAddress: originalDelivery.photoAddress
         };
       });
       
