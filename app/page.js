@@ -143,6 +143,7 @@ class SeurDB {
       transaction.onerror = () => reject(transaction.error);
     });
   }
+  
 }
 
 const seurDB = new SeurDB();
@@ -1004,18 +1005,9 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       lat: delivery.lat,
       lng: delivery.lng,
       placeName: delivery.placeName,
-      // DO NOT send binary image data
-      // photoSetId: delivery.photoSetId,
-      // ocrText: delivery.ocrText,
-      // ocrConfidence: delivery.ocrConfidence,
-      // labelPhoto: delivery.labelPhoto, // REMOVE - too large
-      // labelPreview: delivery.labelPreview, // REMOVE
-      // parcelPhoto: delivery.parcelPhoto, // REMOVE - too large
-      // parcelPreview: delivery.parcelPreview, // REMOVE
-      // originalPhotos: delivery.originalPhotos // REMOVE - too large
     }));
 
-    console.log("Sending clean deliveries for optimization:", cleanDeliveriesForOptimization.length);
+    console.log(`🔄 Optimizing ${cleanDeliveriesForOptimization.length} stops with real geographical distances...`);
     
     const response = await fetch(SERVER_URL+'/api/optimize-route', {
       method: 'POST',
@@ -1023,7 +1015,7 @@ const optimizeRoute = async (deliveriesWithCoords) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ 
-        deliveries: cleanDeliveriesForOptimization, // Send clean data without images
+        deliveries: cleanDeliveriesForOptimization,
         depot: seurDepot
       }),
     });
@@ -1033,9 +1025,14 @@ const optimizeRoute = async (deliveriesWithCoords) => {
     if (data.success) {
       // RECOMBINE optimized data with original photo data
       const routeWithPhotos = data.route.map((optimizedStop, index) => {
-        const originalDelivery = deliveriesWithCoords[index];
+        // Find the original delivery that matches this optimized stop
+        const originalDelivery = deliveriesWithCoords.find(d => 
+          d.clientName === optimizedStop.clientName && 
+          d.address === optimizedStop.address
+        ) || deliveriesWithCoords[index]; // Fallback to index if no match
+        
         return {
-          ...optimizedStop, // Optimized route data
+          ...optimizedStop, // Optimized route data with real distances
           // PRESERVE ALL original data including photos
           clientName: originalDelivery.clientName,
           address: originalDelivery.address,
@@ -1061,10 +1058,11 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       
       setOptimizedRoute(routeWithPhotos);
       setCurrentStep('complete');
-      testImageQuality(); // Add this line
-
+      
+      const totalDistance = calculateTotalDistance(routeWithPhotos);
       const photosCount = routeWithPhotos.filter(stop => stop.labelPhoto).length;
-      alert(`✅ Route optimized successfully! ${photosCount}/${routeWithPhotos.length} stops have photos visible.`);
+      
+      alert(`✅ Route optimized with ${data.optimizedCount} stops! Total distance: ${totalDistance}. ${photosCount} stops have photos.`);
     } else {
       alert('❌ Optimization error: ' + data.error);
     }
@@ -1073,6 +1071,28 @@ const optimizeRoute = async (deliveriesWithCoords) => {
     alert('Optimization error: ' + error.message);
   } finally {
     setProcessing(false);
+  }
+};
+
+// Helper function to calculate total route distance
+const calculateTotalDistance = (route) => {
+  let totalMeters = 0;
+  route.forEach(stop => {
+    // Extract numeric distance from string like "1.2 km" or "500 m"
+    const distanceText = stop.distanceFromPrevious;
+    if (distanceText && distanceText !== '0 km') {
+      if (distanceText.includes('km')) {
+        totalMeters += parseFloat(distanceText) * 1000;
+      } else if (distanceText.includes('m')) {
+        totalMeters += parseInt(distanceText);
+      }
+    }
+  });
+  
+  if (totalMeters < 1000) {
+    return `${Math.round(totalMeters)} m`;
+  } else {
+    return `${(totalMeters / 1000).toFixed(1)} km`;
   }
 };
   // Get user's current location
@@ -1122,19 +1142,14 @@ const optimizeRoute = async (deliveriesWithCoords) => {
   };
 
   // Open Google Maps with directions
-  const openGoogleMapsDirections = (delivery) => {
-    if (!userLocation) {
-      alert('Please allow location access first to get directions');
-      return;
-    }
-
-    const destination = encodeURIComponent(delivery.address);
-    const origin = `${userLocation.lat},${userLocation.lng}`;
-    
-    const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
-    
-    window.open(googleMapsUrl, '_blank');
-  };
+ const openGoogleMapsDirections = (delivery) => {
+  const destination = encodeURIComponent(delivery.address);
+  
+  // Open Google Maps with only destination (no origin)
+  const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+  
+  window.open(googleMapsUrl, '_blank');
+};
 
   // Handle stop click
 // Handle stop click - ONLY when clicking on name/address, not photos
@@ -1154,14 +1169,11 @@ const handleStopClick = (stopIndex, event) => {
 
   // Handle Google Maps button click
   const handleGoogleMapsClick = (stop, event) => {
-    event.stopPropagation();
-    
-    if (!userLocation && !isGettingLocation) {
-      getUserLocation();
-    } else if (userLocation) {
-      openGoogleMapsDirections(stop);
-    }
-  };
+  event.stopPropagation();
+  
+  // Just open Google Maps directly to the destination
+  openGoogleMapsDirections(stop);
+};
 
   // Handle focus change from map
   const handleFocusChange = (segmentIndex) => {
@@ -1863,7 +1875,6 @@ const getStepStatus = (step) => {
     {/* Photos section - NOT clickable for map focus */}
 {/* Photos section - Clickable for full size view */}
 
-// Update the photo sections to ensure we're passing the right data:
 
 {/* Photos section - Clickable for full size view */}
 {(stop.labelPreview || stop.parcelPreview) && (
