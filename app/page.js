@@ -399,7 +399,9 @@ useEffect(() => {
   };
 
   // Handle photo capture
- const handlePhotoCapture = (event) => {
+// Handle photo capture - PROCESS IMMEDIATELY without binary storage
+// Handle photo capture - PROCESS IMMEDIATELY via server
+const handlePhotoCapture = (event) => {
   const file = event.target.files[0];
   if (!file) return;
 
@@ -419,7 +421,6 @@ useEffect(() => {
 
       const photoData = {
         id: Date.now(),
-        data: originalData,
         preview: previewData,
         timestamp: new Date().toISOString(),
         type: photoStep
@@ -429,7 +430,7 @@ useEffect(() => {
         setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
         setPhotoStep('parcel');
       } else {
-        // Both photos captured, add to collection and PROCESS IMMEDIATELY
+        // Both photos captured, add to collection and PROCESS IMMEDIATELY via server
         setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
         
         const orderPhotos = {
@@ -437,13 +438,13 @@ useEffect(() => {
           label: currentOrderPhotos.label,
           parcel: photoData,
           processed: false,
-          processing: false // Add processing state
+          processing: false
         };
         
         setCapturedPhotos(prev => [...prev, orderPhotos]);
         
-        // PROCESS THIS SINGLE ORDER IMMEDIATELY
-        processSinglePhotoOrder(orderPhotos);
+        // PROCESS THIS SINGLE ORDER IMMEDIATELY via server
+        processSinglePhotoOrder(orderPhotos, file);
         
         setCurrentOrderPhotos({ label: null, parcel: null });
         setPhotoStep('label');
@@ -454,8 +455,10 @@ useEffect(() => {
   reader.readAsDataURL(file);
 };
 // Process single photo order (LABEL ONLY)
-const processSinglePhotoOrder = async (photoSet) => {
-  if (!photoSet.label?.data) return;
+// Process single photo order (LABEL ONLY) - No binary storage
+// Process single photo order using server endpoint
+const processSinglePhotoOrder = async (photoSet, labelFile) => {
+  if (!labelFile) return;
   
   // Set this photo set as processing
   setCapturedPhotos(prev => 
@@ -463,72 +466,44 @@ const processSinglePhotoOrder = async (photoSet) => {
   );
 
   try {
-    console.log("Processing single photo set:", photoSet.id);
+    console.log("Processing single photo set via server:", photoSet.id);
 
-    // Dynamically import Tesseract for client-side only
-    const Tesseract = (await import('tesseract.js')).default;
+    // Create FormData for file upload to server
+    const formData = new FormData();
+    formData.append('labelImage', labelFile);
 
-    // STEP 1: Client-side OCR text extraction from LABEL ONLY
-    console.log("Starting client-side OCR for single order...");
-    
-    const { data: { text, confidence } } = await Tesseract.recognize(
-      photoSet.label.data,
-      'eng+spa',
-      {
-        logger: progress => {
-          if (progress.status === 'recognizing text') {
-            console.log(`OCR Progress: ${Math.round(progress.progress * 100)}%`);
-          }
-        }
-      }
-    );
-
-    console.log("OCR extracted text:", text);
-    console.log("OCR Confidence:", confidence);
-
-    if (!text || text.trim().length < 10) {
-      throw new Error('No readable text found in image');
-    }
-
-    // STEP 2: Send extracted text to our server for AI processing
-    const aiResponse = await fetch(SERVER_URL+'/api/process-order-text', {
+    // Send to server for processing
+    const response = await fetch(`${SERVER_URL}/api/process-single-photo`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ 
-        ocrText: text
-      }),
+      body: formData, // No Content-Type header for FormData
     });
 
-    const aiData = await aiResponse.json();
+    const data = await response.json();
     
-    if (aiData.success && aiData.delivery) {
-      console.log("AI extracted data:", aiData.delivery);
+    if (data.success && data.delivery) {
+      console.log("Server extracted data:", data.delivery);
       
       // Update this single photo set with extracted data
       const updatedPhotoSet = {
         ...photoSet,
-        extractedData: aiData.delivery,
-        ocrText: text,
-        ocrConfidence: confidence,
+        extractedData: data.delivery,
         processed: true,
         processing: false,
-        clientOcr: true
+        serverProcessed: true // Flag for server processing
       };
       
       setCapturedPhotos(prev => 
         prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
       );
       
-      console.log(`✅ Single order processed successfully!`);
+      console.log(`✅ Single order processed successfully via server!`);
       
     } else {
-      throw new Error(aiData.error || 'AI processing failed');
+      throw new Error(data.error || 'Server processing failed');
     }
 
   } catch (error) {
-    console.error("Single order processing failed:", error);
+    console.error("Server photo processing failed:", error);
     
     // Mark as processed but failed
     const updatedPhotoSet = {
@@ -536,7 +511,7 @@ const processSinglePhotoOrder = async (photoSet) => {
       processed: true,
       processing: false,
       error: error.message,
-      clientOcr: true
+      serverProcessed: true
     };
     
     setCapturedPhotos(prev => 
@@ -1374,7 +1349,7 @@ const getStepStatus = (step) => {
     <h3 className="font-semibold mb-3 text-gray-900">
       Captured Orders: {capturedPhotos.length}
       <span className="text-sm font-normal text-gray-600 ml-2">
-        (Processing automatically...)
+        (Processing automatically via OpenAI...)
       </span>
     </h3>
     <div className="space-y-4">
@@ -1411,60 +1386,64 @@ const getStepStatus = (step) => {
               {photoSet.processing && (
                 <div className="flex items-center space-x-2">
                   <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                  <span className="text-xs text-blue-600">Processing...</span>
+                  <span className="text-xs text-blue-600">Processing via OpenAI...</span>
                 </div>
               )}
             </div>
 
-            {/* Extracted Data Display */}
-            <div className="flex-1 ml-4">
-              {photoSet.processed && photoSet.extractedData ? (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-xs font-semibold text-green-800">
-                      ✅ Processed Successfully
-                    </div>
-                    {photoSet.ocrConfidence && (
-                      <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-                        Confidence: {Math.round(photoSet.ocrConfidence)}%
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-                    {photoSet.extractedData.clientName && (
-                      <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
-                    )}
-                    {photoSet.extractedData.address && (
-                      <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
-                    )}
-                    {photoSet.extractedData.phoneNumber && (
-                      <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-                    )}
-                    {photoSet.extractedData.barcode && (
-                      <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
-                    )}
-                  </div>
-                </div>
-              ) : photoSet.processed && photoSet.error ? (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                  <div className="text-xs text-red-700">
-                    ❌ Processing Failed: {photoSet.error}
-                  </div>
-                </div>
-              ) : photoSet.processing ? (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="text-xs text-blue-700">
-                    🔍 Processing label with FREE OCR + AI...
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                  <div className="text-xs text-yellow-700">
-                    ⏳ Waiting to process...
-                  </div>
-                </div>
-              )}
-            </div>
+{/* Extracted Data Display */}
+<div className="flex-1 ml-4">
+  {photoSet.processed && photoSet.extractedData ? (
+    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-semibold text-green-800">
+          ✅ Processed via Server
+        </div>
+        <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+          Server Processing
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+        {photoSet.extractedData.clientName && (
+          <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
+        )}
+        {photoSet.extractedData.address && (
+          <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
+        )}
+        {photoSet.extractedData.phoneNumber && (
+          <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
+        )}
+        {photoSet.extractedData.barcode && (
+          <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
+        )}
+        {photoSet.extractedData.sender && (
+          <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
+        )}
+        {photoSet.extractedData.weight && (
+          <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
+        )}
+      </div>
+    </div>
+  ) : photoSet.processed && photoSet.error ? (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+      <div className="text-xs text-red-700">
+        ❌ Server Processing Failed: {photoSet.error}
+      </div>
+    </div>
+  ) : photoSet.processing ? (
+    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+      <div className="text-xs text-blue-700">
+        🔍 Processing via Server + OpenAI...
+      </div>
+    </div>
+  ) : (
+    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+      <div className="text-xs text-yellow-700">
+        ⏳ Waiting to process...
+      </div>
+    </div>
+  )}
+</div>
 
             <button
               onClick={() => removePhotoSet(photoSet.id)}
