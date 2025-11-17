@@ -177,6 +177,115 @@ function HomeContent() {
   const [capturedPhotos, setCapturedPhotos] = useState([]);
   const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ label: null, parcel: null });
   const [photoStep, setPhotoStep] = useState('label');
+  const [selectedImages, setSelectedImages] = useState(null);
+// Image Modal Component
+// Image Modal Component - FIXED
+// Image Modal Component - HIGH QUALITY
+const ImageModal = ({ images, onClose }) => {
+  if (!images) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-95 z-[100000] flex items-center justify-center p-2">
+      <div className="bg-white rounded-xl max-w-7xl w-full max-h-[98vh] overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-bold text-gray-900">High Quality Package Photos</h3>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-2xl bg-gray-100 hover:bg-gray-200 w-10 h-10 rounded-full flex items-center justify-center transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-auto p-4">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            {/* Label Photo */}
+            <div className="text-center">
+              <div className="text-lg font-semibold text-gray-700 mb-4">📋 Shipping Label - FULL QUALITY</div>
+              <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                {images.labelPhoto ? (
+                  <img 
+                    src={images.labelPhoto} 
+                    alt="Shipping Label" 
+                    className="max-w-full max-h-[70vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
+                    style={{ imageRendering: 'high-quality' }}
+                  />
+                ) : (
+                  <div className="text-red-500 text-lg py-8">
+                    ❌ Full quality label image not available
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {/* Parcel Photo */}
+            <div className="text-center">
+              <div className="text-lg font-semibold text-gray-700 mb-4">📦 Parcel View - FULL QUALITY</div>
+              <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                {images.parcelPhoto ? (
+                  <img 
+                    src={images.parcelPhoto} 
+                    alt="Parcel" 
+                    className="max-w-full max-h-[70vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
+                    style={{ imageRendering: 'high-quality' }}
+                  />
+                ) : (
+                  <div className="text-red-500 text-lg py-8">
+                    ❌ Full quality parcel image not available
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div className="p-4 border-t border-gray-200 text-center shrink-0">
+          <button
+            onClick={onClose}
+            className="bg-black text-white px-8 py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors text-lg"
+          >
+            Close Preview
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+// Handle photo click to show full size
+// Handle photo click to show full size - with better debugging
+const handlePhotoClick = (stop) => {
+  console.log("=== STOP DATA FOR MODAL ===");
+  console.log("Stop object:", stop);
+  console.log("Label photo (full):", stop.labelPhoto?.substring(0, 100) + "...");
+  console.log("Label preview (small):", stop.labelPreview?.substring(0, 100) + "...");
+  console.log("Parcel photo (full):", stop.parcelPhoto?.substring(0, 100) + "...");
+  console.log("Parcel preview (small):", stop.parcelPreview?.substring(0, 100) + "...");
+  console.log("Original photos:", stop.originalPhotos);
+  
+  // Try to get the highest quality images available
+  const labelPhoto = stop.labelPhoto || 
+                    stop.originalPhotos?.label?.data || 
+                    stop.labelPreview;
+  
+  const parcelPhoto = stop.parcelPhoto || 
+                     stop.originalPhotos?.parcel?.data || 
+                     stop.parcelPreview;
+
+  console.log("Using label photo:", labelPhoto?.substring(0, 100) + "...");
+  console.log("Using parcel photo:", parcelPhoto?.substring(0, 100) + "...");
+  
+  setSelectedImages({
+    labelPhoto: labelPhoto,
+    parcelPhoto: parcelPhoto,
+    extractedData: stop.extractedData
+  });
+};
+
+// Close modal
+const handleCloseModal = () => {
+  setSelectedImages(null);
+};
+
   const [dbReady, setDbReady] = useState(false);
   
   const router = useRouter();
@@ -401,15 +510,17 @@ useEffect(() => {
   // Handle photo capture
 // Handle photo capture - PROCESS IMMEDIATELY without binary storage
 // Handle photo capture - PROCESS IMMEDIATELY via server
+// Handle photo capture - STORE ORIGINAL QUALITY
+// Handle photo capture - PROPERLY STORE FULL QUALITY
 const handlePhotoCapture = (event) => {
   const file = event.target.files[0];
   if (!file) return;
 
   const reader = new FileReader();
   reader.onloadend = () => {
-    const originalData = reader.result;
+    const originalData = reader.result; // This is the full quality Base64 image
     
-    // Create resized versions for preview
+    // Create a small preview (50x50) for the UI
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
@@ -421,16 +532,25 @@ const handlePhotoCapture = (event) => {
 
       const photoData = {
         id: Date.now(),
-        preview: previewData,
+        data: originalData, // FULL QUALITY - keep the original Base64
+        preview: previewData, // Small preview for UI
         timestamp: new Date().toISOString(),
-        type: photoStep
+        type: photoStep,
+        file: file // Keep the original file reference
       };
+
+      console.log(`📸 Captured ${photoStep} photo:`, {
+        fullQualitySize: originalData.length,
+        previewSize: previewData.length,
+        fileType: file.type,
+        fileSize: file.size
+      });
 
       if (photoStep === 'label') {
         setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
         setPhotoStep('parcel');
       } else {
-        // Both photos captured, add to collection and PROCESS IMMEDIATELY via server
+        // Both photos captured
         setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
         
         const orderPhotos = {
@@ -443,7 +563,7 @@ const handlePhotoCapture = (event) => {
         
         setCapturedPhotos(prev => [...prev, orderPhotos]);
         
-        // PROCESS THIS SINGLE ORDER IMMEDIATELY via server
+        // Process with the ORIGINAL FILE for best quality
         processSinglePhotoOrder(orderPhotos, file);
         
         setCurrentOrderPhotos({ label: null, parcel: null });
@@ -532,7 +652,21 @@ const processSinglePhotoOrder = async (photoSet, labelFile) => {
 // Process captured photos with SERVER-SIDE OCR + OpenAI
 // Process captured photos with CLIENT-SIDE OCR + Server AI
 
-
+const testImageQuality = () => {
+  if (optimizedRoute.length > 0) {
+    const firstStop = optimizedRoute[0];
+    if (firstStop.labelPhoto) {
+      const img = new Image();
+      img.onload = () => {
+        console.log("✅ Full quality image dimensions:", img.naturalWidth, "x", img.naturalHeight);
+      };
+      img.onerror = () => {
+        console.log("❌ Full quality image failed to load");
+      };
+      img.src = firstStop.labelPhoto;
+    }
+  }
+};
   // Combine REAL AI photo data with PDA list data
  // Combine REAL AI photo data with PDA list data
 // Combine REAL AI photo data with PDA list data
@@ -706,23 +840,30 @@ const handlePDAUpload = async (event) => {
     
     if (data.success) {
       // Client-side - Add photo binary data back to matched deliveries
-      const deliveriesWithPhotos = data.deliveries.map(delivery => {
-        if (delivery.source === 'photo-enhanced' && delivery.photoSetId) {
-          const originalPhotoSet = capturedPhotos.find(ps => ps.id === delivery.photoSetId);
-          if (originalPhotoSet) {
-            return {
-              ...delivery,
-              // Add binary photo data for display
-              labelPhoto: originalPhotoSet.label?.data,
-              labelPreview: originalPhotoSet.label?.preview,
-              parcelPhoto: originalPhotoSet.parcel?.data,
-              parcelPreview: originalPhotoSet.parcel?.preview,
-              originalPhotos: originalPhotoSet
-            };
-          }
-        }
-        return delivery;
+// In your handlePDAUpload function, update the matching section:
+// Client-side - Add FULL QUALITY photo data back to matched deliveries
+const deliveriesWithPhotos = data.deliveries.map(delivery => {
+  if (delivery.source === 'photo-enhanced' && delivery.photoSetId) {
+    const originalPhotoSet = capturedPhotos.find(ps => ps.id === delivery.photoSetId);
+    if (originalPhotoSet) {
+      console.log(`🖼️ Adding FULL QUALITY photos for ${delivery.clientName}`, {
+        labelData: !!originalPhotoSet.label?.data,
+        parcelData: !!originalPhotoSet.parcel?.data
       });
+      
+      return {
+        ...delivery,
+        // Add FULL QUALITY binary photo data
+        labelPhoto: originalPhotoSet.label?.data, // FULL QUALITY
+        labelPreview: originalPhotoSet.label?.preview,
+        parcelPhoto: originalPhotoSet.parcel?.data, // FULL QUALITY
+        parcelPreview: originalPhotoSet.parcel?.preview,
+        originalPhotos: originalPhotoSet
+      };
+    }
+  }
+  return delivery;
+});
 
       setDeliveries(deliveriesWithPhotos);
       
@@ -806,17 +947,18 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
           weight: originalDelivery.weight,
           // PRESERVE PHOTO DATA from original
           photoSetId: originalDelivery.photoSetId,
-          labelPhoto: originalDelivery.labelPhoto,
-          labelPreview: originalDelivery.labelPreview,
-          parcelPhoto: originalDelivery.parcelPhoto,
-          parcelPreview: originalDelivery.parcelPreview,
-          originalPhotos: originalDelivery.originalPhotos,
           ocrText: originalDelivery.ocrText,
           ocrConfidence: originalDelivery.ocrConfidence,
           source: originalDelivery.source,
           matchConfidence: originalDelivery.matchConfidence,
           enhancedAddress: originalDelivery.enhancedAddress,
-          photoAddress: originalDelivery.photoAddress
+          photoAddress: originalDelivery.photoAddress,
+          photoSetId: originalDelivery.photoSetId,
+labelPhoto: originalDelivery.labelPhoto, // Full quality
+labelPreview: originalDelivery.labelPreview,
+parcelPhoto: originalDelivery.parcelPhoto, // Full quality
+parcelPreview: originalDelivery.parcelPreview,
+originalPhotos: originalDelivery.originalPhotos,
         };
       });
       
@@ -919,7 +1061,8 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       
       setOptimizedRoute(routeWithPhotos);
       setCurrentStep('complete');
-      
+      testImageQuality(); // Add this line
+
       const photosCount = routeWithPhotos.filter(stop => stop.labelPhoto).length;
       alert(`✅ Route optimized successfully! ${photosCount}/${routeWithPhotos.length} stops have photos visible.`);
     } else {
@@ -1718,65 +1861,93 @@ const getStepStatus = (step) => {
     </div>
 
     {/* Photos section - NOT clickable for map focus */}
-    {(stop.labelPreview || stop.parcelPreview) && (
-      <div className="mb-3">
-        <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-        <div className="flex space-x-3">
-          {stop.labelPreview && (
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Label</div>
-              <img 
-                src={stop.labelPreview} 
-                alt="Label" 
-                className="w-12 h-12 object-cover rounded border shadow-sm cursor-default"
-              />
-            </div>
-          )}
-          {stop.parcelPreview && (
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Parcel</div>
-              <img 
-                src={stop.parcelPreview} 
-                alt="Parcel" 
-                className="w-12 h-12 object-cover rounded border shadow-sm cursor-default"
-              />
-            </div>
-          )}
-        </div>
-      </div>
-    )}
+{/* Photos section - Clickable for full size view */}
 
+// Update the photo sections to ensure we're passing the right data:
+
+{/* Photos section - Clickable for full size view */}
+{(stop.labelPreview || stop.parcelPreview) && (
+  <div className="mb-3">
+    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+    <div className="flex space-x-3">
+      {stop.labelPreview && (
+        <div 
+          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+          onClick={() => handlePhotoClick({
+            labelPhoto: stop.labelPhoto || stop.labelPreview,
+            parcelPhoto: stop.parcelPhoto || stop.parcelPreview,
+            extractedData: stop.extractedData
+          })}
+        >
+          <div className="text-xs text-gray-500 mb-1">Label</div>
+          <img 
+            src={stop.labelPreview} 
+            alt="Label" 
+            className="w-12 h-12 object-cover rounded border shadow-sm"
+          />
+          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+        </div>
+      )}
+      {stop.parcelPreview && (
+        <div 
+          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+          onClick={() => handlePhotoClick({
+            labelPhoto: stop.labelPhoto || stop.labelPreview,
+            parcelPhoto: stop.parcelPhoto || stop.parcelPreview,
+            extractedData: stop.extractedData
+          })}
+        >
+          <div className="text-xs text-gray-500 mb-1">Parcel</div>
+          <img 
+            src={stop.parcelPreview} 
+            alt="Parcel" 
+            className="w-12 h-12 object-cover rounded border shadow-sm"
+          />
+          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+        </div>
+      )}
+    </div>
+  </div>
+)}
     {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
     {clickedStop === index && (
       <div className="mt-4">
         {/* Show full-size images between Get Directions and the actual directions */}
-        {(stop.labelPhoto || stop.parcelPhoto) && (
-          <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-            <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {stop.labelPhoto && (
-                <div className="text-center">
-                  <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
-                  <img 
-                    src={stop.labelPhoto} 
-                    alt="Shipping Label" 
-                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm cursor-default"
-                  />
-                </div>
-              )}
-              {stop.parcelPhoto && (
-                <div className="text-center">
-                  <div className="text-xs text-gray-500 mb-1">Parcel View</div>
-                  <img 
-                    src={stop.parcelPhoto} 
-                    alt="Parcel" 
-                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm cursor-default"
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+{(stop.labelPhoto || stop.parcelPhoto) && (
+  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+    <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {stop.labelPhoto && (
+        <div 
+          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+          onClick={() => handlePhotoClick(stop)}
+        >
+          <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+          <img 
+            src={stop.labelPhoto} 
+            alt="Shipping Label" 
+            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+          />
+          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+        </div>
+      )}
+      {stop.parcelPhoto && (
+        <div 
+          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+          onClick={() => handlePhotoClick(stop)}
+        >
+          <div className="text-xs text-gray-500 mb-1">Parcel View</div>
+          <img 
+            src={stop.parcelPhoto} 
+            alt="Parcel" 
+            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+          />
+          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+        </div>
+      )}
+    </div>
+  </div>
+)}
 
         {!userLocation && !isGettingLocation && (
           <button
@@ -1916,6 +2087,10 @@ const getStepStatus = (step) => {
       {optimizedRoute.length > 0 && (
         <div className="lg:hidden h-20"></div>
       )}
+      <ImageModal 
+      images={selectedImages} 
+      onClose={handleCloseModal} 
+    />
     </main>
   );
 }
