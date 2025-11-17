@@ -994,13 +994,20 @@ const optimizeRoute = async (deliveriesWithCoords) => {
   };
 
   // Handle stop click
-  const handleStopClick = (stopIndex) => {
-    if (typeof window !== 'undefined' && window.focusOnSegment) {
-      window.focusOnSegment(stopIndex);
-      setActiveTab('map');
-      setClickedStop(stopIndex);
-    }
-  };
+// Handle stop click - ONLY when clicking on name/address, not photos
+const handleStopClick = (stopIndex, event) => {
+  // Check if the click was on a photo element
+  const isPhotoClick = event.target.closest('img') || 
+                      event.target.closest('.text-center') || 
+                      event.target.closest('.flex.space-x-3');
+  
+  // Only focus if NOT clicking on photos
+  if (!isPhotoClick && typeof window !== 'undefined' && window.focusOnSegment) {
+    window.focusOnSegment(stopIndex);
+    setActiveTab('map');
+    setClickedStop(stopIndex);
+  }
+};
 
   // Handle Google Maps button click
   const handleGoogleMapsClick = (stop, event) => {
@@ -1672,144 +1679,149 @@ const getStepStatus = (step) => {
       </div>
       
       <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
-        {optimizedRoute.map((stop, index) => (
-          <div 
-            key={index}
-            className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all cursor-pointer ${
-              clickedStop === index 
-                ? 'border-2 border-black bg-gray-50' 
-                : 'border-0'
-            }`}
-            onClick={() => handleStopClick(index)}
-          >
-            <div className="flex justify-between items-start mb-3">
-              <div className="flex items-center">
-                <div className="w-6 h-6 md:w-8 md:h-8 bg-black text-white rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3">
-                  {stop.stopNumber}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
-                  <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
-                </div>
-              </div>
-              <div className="text-right flex-shrink-0 ml-2">
-                <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
-                  📍 {stop.distanceFromPrevious}
-                </div>
-                <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
-              </div>
-            </div>
-            
-            <div className="mb-3 md:mb-4">
-              <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
-              <div className="text-gray-900 text-sm md:text-base break-words">{stop.address}</div>
-            </div>
-
-            {/* ALWAYS Show photo previews - Remove the clickedStop condition */}
-            {(stop.labelPreview || stop.parcelPreview) && (
-              <div className="mb-3">
-                <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-                <div className="flex space-x-3">
-                  {stop.labelPreview && (
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Label</div>
-                      <img 
-                        src={stop.labelPreview} 
-                        alt="Label" 
-                        className="w-12 h-12 object-cover rounded border shadow-sm"
-                      />
-                    </div>
-                  )}
-                  {stop.parcelPreview && (
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                      <img 
-                        src={stop.parcelPreview} 
-                        alt="Parcel" 
-                        className="w-12 h-12 object-cover rounded border shadow-sm"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
-            {clickedStop === index && (
-              <div className="mt-4">
-                {/* Show full-size images between Get Directions and the actual directions */}
-                {(stop.labelPhoto || stop.parcelPhoto) && (
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {stop.labelPhoto && (
-                        <div className="text-center">
-                          <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
-                          <img 
-                            src={stop.labelPhoto} 
-                            alt="Shipping Label" 
-                            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                          />
-                        </div>
-                      )}
-                      {stop.parcelPhoto && (
-                        <div className="text-center">
-                          <div className="text-xs text-gray-500 mb-1">Parcel View</div>
-                          <img 
-                            src={stop.parcelPhoto} 
-                            alt="Parcel" 
-                            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {!userLocation && !isGettingLocation && (
-                  <button
-                    onClick={(e) => handleGoogleMapsClick(stop, e)}
-                    className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
-                  >
-                    <span>🗺️</span>
-                    <span>Get Directions</span>
-                  </button>
-                )}
-
-                {isGettingLocation && (
-                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div className="flex items-center justify-center space-x-2">
-                      <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
-                      <span className="text-sm text-blue-700">Getting your location...</span>
-                    </div>
-                  </div>
-                )}
-
-                {locationError && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <p className="text-sm text-red-700 mb-2">{locationError}</p>
-                    <button
-                      onClick={(e) => handleGoogleMapsClick(stop, e)}
-                      className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
-                    >
-                      🔄 Try Again
-                    </button>
-                  </div>
-                )}
-
-                {userLocation && (
-                  <button
-                    onClick={(e) => openGoogleMapsDirections(stop)}
-                    className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
-                  >
-                    <span>🗺️</span>
-                    <span>Open Google Maps</span>
-                  </button>
-                )}
-              </div>
-            )}
+       {optimizedRoute.map((stop, index) => (
+  <div 
+    key={index}
+    className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all ${
+      clickedStop === index 
+        ? 'border-2 border-black bg-gray-50' 
+        : 'border-0'
+    }`}
+  >
+    {/* Clickable area for name/address - will focus on map */}
+    <div 
+      className="cursor-pointer"
+      onClick={(e) => handleStopClick(index, e)}
+    >
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex items-center">
+          <div className="w-6 h-6 md:w-8 md:h-8 bg-black text-white rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3">
+            {stop.stopNumber}
           </div>
-        ))}
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
+            <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0 ml-2">
+          <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
+            📍 {stop.distanceFromPrevious}
+          </div>
+          <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
+        </div>
+      </div>
+      
+      <div className="mb-3 md:mb-4">
+        <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
+        <div className="text-gray-900 text-sm md:text-base break-words">{stop.address}</div>
+      </div>
+    </div>
+
+    {/* Photos section - NOT clickable for map focus */}
+    {(stop.labelPreview || stop.parcelPreview) && (
+      <div className="mb-3">
+        <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+        <div className="flex space-x-3">
+          {stop.labelPreview && (
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Label</div>
+              <img 
+                src={stop.labelPreview} 
+                alt="Label" 
+                className="w-12 h-12 object-cover rounded border shadow-sm cursor-default"
+              />
+            </div>
+          )}
+          {stop.parcelPreview && (
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Parcel</div>
+              <img 
+                src={stop.parcelPreview} 
+                alt="Parcel" 
+                className="w-12 h-12 object-cover rounded border shadow-sm cursor-default"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
+    {clickedStop === index && (
+      <div className="mt-4">
+        {/* Show full-size images between Get Directions and the actual directions */}
+        {(stop.labelPhoto || stop.parcelPhoto) && (
+          <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+            <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {stop.labelPhoto && (
+                <div className="text-center">
+                  <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+                  <img 
+                    src={stop.labelPhoto} 
+                    alt="Shipping Label" 
+                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm cursor-default"
+                  />
+                </div>
+              )}
+              {stop.parcelPhoto && (
+                <div className="text-center">
+                  <div className="text-xs text-gray-500 mb-1">Parcel View</div>
+                  <img 
+                    src={stop.parcelPhoto} 
+                    alt="Parcel" 
+                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm cursor-default"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!userLocation && !isGettingLocation && (
+          <button
+            onClick={(e) => handleGoogleMapsClick(stop, e)}
+            className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
+          >
+            <span>🗺️</span>
+            <span>Get Directions</span>
+          </button>
+        )}
+
+        {isGettingLocation && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center justify-center space-x-2">
+              <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
+              <span className="text-sm text-blue-700">Getting your location...</span>
+            </div>
+          </div>
+        )}
+
+        {locationError && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-sm text-red-700 mb-2">{locationError}</p>
+            <button
+              onClick={(e) => handleGoogleMapsClick(stop, e)}
+              className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
+            >
+              🔄 Try Again
+            </button>
+          </div>
+        )}
+
+        {userLocation && (
+          <button
+            onClick={(e) => openGoogleMapsDirections(stop)}
+            className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
+          >
+            <span>🗺️</span>
+            <span>Open Google Maps</span>
+          </button>
+        )}
+      </div>
+    )}
+  </div>
+))}
       </div>
     </div>
 
