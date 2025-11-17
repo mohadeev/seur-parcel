@@ -399,53 +399,153 @@ useEffect(() => {
   };
 
   // Handle photo capture
-  const handlePhotoCapture = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
+ const handlePhotoCapture = (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const originalData = reader.result;
-      
-      // Create resized versions for preview
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = 50;
-        canvas.height = 50;
-        ctx.drawImage(img, 0, 0, 50, 50);
-        const previewData = canvas.toDataURL('image/jpeg', 0.8);
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const originalData = reader.result;
+    
+    // Create resized versions for preview
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 50;
+      canvas.height = 50;
+      ctx.drawImage(img, 0, 0, 50, 50);
+      const previewData = canvas.toDataURL('image/jpeg', 0.8);
 
-        const photoData = {
-          id: Date.now(),
-          data: originalData,
-          preview: previewData,
-          timestamp: new Date().toISOString(),
-          type: photoStep
-        };
-
-        if (photoStep === 'label') {
-          setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
-          setPhotoStep('parcel');
-        } else {
-          setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
-          // Both photos captured, add to collection
-          const orderPhotos = {
-            id: Date.now(),
-            label: currentOrderPhotos.label,
-            parcel: photoData,
-            processed: false
-          };
-          setCapturedPhotos(prev => [...prev, orderPhotos]);
-          setCurrentOrderPhotos({ label: null, parcel: null });
-          setPhotoStep('label');
-        }
+      const photoData = {
+        id: Date.now(),
+        data: originalData,
+        preview: previewData,
+        timestamp: new Date().toISOString(),
+        type: photoStep
       };
-      img.src = originalData;
+
+      if (photoStep === 'label') {
+        setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
+        setPhotoStep('parcel');
+      } else {
+        // Both photos captured, add to collection and PROCESS IMMEDIATELY
+        setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
+        
+        const orderPhotos = {
+          id: Date.now(),
+          label: currentOrderPhotos.label,
+          parcel: photoData,
+          processed: false,
+          processing: false // Add processing state
+        };
+        
+        setCapturedPhotos(prev => [...prev, orderPhotos]);
+        
+        // PROCESS THIS SINGLE ORDER IMMEDIATELY
+        processSinglePhotoOrder(orderPhotos);
+        
+        setCurrentOrderPhotos({ label: null, parcel: null });
+        setPhotoStep('label');
+      }
     };
-    reader.readAsDataURL(file);
+    img.src = originalData;
   };
+  reader.readAsDataURL(file);
+};
+// Process single photo order (LABEL ONLY)
+const processSinglePhotoOrder = async (photoSet) => {
+  if (!photoSet.label?.data) return;
+  
+  // Set this photo set as processing
+  setCapturedPhotos(prev => 
+    prev.map(ps => ps.id === photoSet.id ? { ...ps, processing: true } : ps)
+  );
+
+  try {
+    console.log("Processing single photo set:", photoSet.id);
+
+    // Dynamically import Tesseract for client-side only
+    const Tesseract = (await import('tesseract.js')).default;
+
+    // STEP 1: Client-side OCR text extraction from LABEL ONLY
+    console.log("Starting client-side OCR for single order...");
+    
+    const { data: { text, confidence } } = await Tesseract.recognize(
+      photoSet.label.data,
+      'eng+spa',
+      {
+        logger: progress => {
+          if (progress.status === 'recognizing text') {
+            console.log(`OCR Progress: ${Math.round(progress.progress * 100)}%`);
+          }
+        }
+      }
+    );
+
+    console.log("OCR extracted text:", text);
+    console.log("OCR Confidence:", confidence);
+
+    if (!text || text.trim().length < 10) {
+      throw new Error('No readable text found in image');
+    }
+
+    // STEP 2: Send extracted text to our server for AI processing
+    const aiResponse = await fetch(SERVER_URL+'/api/process-order-text', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        ocrText: text
+      }),
+    });
+
+    const aiData = await aiResponse.json();
+    
+    if (aiData.success && aiData.delivery) {
+      console.log("AI extracted data:", aiData.delivery);
+      
+      // Update this single photo set with extracted data
+      const updatedPhotoSet = {
+        ...photoSet,
+        extractedData: aiData.delivery,
+        ocrText: text,
+        ocrConfidence: confidence,
+        processed: true,
+        processing: false,
+        clientOcr: true
+      };
+      
+      setCapturedPhotos(prev => 
+        prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+      );
+      
+      console.log(`✅ Single order processed successfully!`);
+      
+    } else {
+      throw new Error(aiData.error || 'AI processing failed');
+    }
+
+  } catch (error) {
+    console.error("Single order processing failed:", error);
+    
+    // Mark as processed but failed
+    const updatedPhotoSet = {
+      ...photoSet,
+      processed: true,
+      processing: false,
+      error: error.message,
+      clientOcr: true
+    };
+    
+    setCapturedPhotos(prev => 
+      prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
+    );
+    
+    console.error(`❌ Failed to process order: ${error.message}`);
+  }
+};
 
   // Process captured photos with AI and then request PDA upload
   // In your processCapturedPhotos function, update the API call:
@@ -456,144 +556,7 @@ useEffect(() => {
 // Process captured photos with FREE Client-side OCR + OpenAI
 // Process captured photos with SERVER-SIDE OCR + OpenAI
 // Process captured photos with CLIENT-SIDE OCR + Server AI
-const processCapturedPhotos = async () => {
-  if (capturedPhotos.length === 0) return;
 
-  setProcessing(true);
-  setCurrentStep('processing-photos');
-
-  try {
-    const processedOrders = [];
-    const extractedDataFromPhotos = [];
-
-    // Dynamically import Tesseract for client-side only
-    const Tesseract = (await import('tesseract.js')).default;
-
-    // Process each photo set with CLIENT-SIDE OCR
-    for (const photoSet of capturedPhotos) {
-      if (photoSet.processed) continue;
-
-      console.log("Processing photo set:", photoSet.id);
-
-      try {
-        // STEP 1: Client-side OCR text extraction
-        console.log("Starting client-side OCR...");
-        
-        const { data: { text, confidence } } = await Tesseract.recognize(
-          photoSet.label.data,
-          'eng+spa',
-          {
-            logger: progress => {
-              if (progress.status === 'recognizing text') {
-                console.log(`Client OCR Progress: ${Math.round(progress.progress * 100)}%`);
-              }
-            }
-          }
-        );
-
-        console.log("Client OCR extracted text:", text);
-        console.log("OCR Confidence:", confidence);
-
-        if (!text || text.trim().length < 10) {
-          throw new Error('No readable text found in image');
-        }
-
-        // STEP 2: Send extracted text to our server for AI processing
-        const aiResponse = await fetch(SERVER_URL+'/api/process-order-text', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            ocrText: text
-          }),
-        });
-
-        const aiData = await aiResponse.json();
-        
-        if (aiData.success && aiData.delivery) {
-          console.log("AI extracted data:", aiData.delivery);
-          
-          // Store extracted data
-          extractedDataFromPhotos.push({
-            photoSetId: photoSet.id,
-            extractedData: aiData.delivery,
-            labelPhoto: photoSet.label.data,
-            labelPreview: photoSet.label.preview,
-            parcelPhoto: photoSet.parcel.data,
-            parcelPreview: photoSet.parcel.preview,
-            originalPhotos: photoSet,
-            ocrText: text,
-            ocrConfidence: confidence,
-            clientOcr: true // Flag to indicate client-side processing
-          });
-
-          // Mark as processed with extracted data
-          const updatedPhotoSet = {
-            ...photoSet,
-            extractedData: aiData.delivery,
-            ocrText: text,
-            ocrConfidence: confidence,
-            processed: true,
-            clientOcr: true
-          };
-          
-          setCapturedPhotos(prev => 
-            prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-          );
-        } else {
-          throw new Error(aiData.error || 'AI processing failed');
-        }
-
-      } catch (error) {
-        console.error("Client OCR + AI processing failed:", error);
-        // Mark as processed but failed
-        const updatedPhotoSet = {
-          ...photoSet,
-          processed: true,
-          error: error.message,
-          clientOcr: true
-        };
-        setCapturedPhotos(prev => 
-          prev.map(ps => ps.id === photoSet.id ? updatedPhotoSet : ps)
-        );
-      }
-    }
-
-    // Continue with the rest of your processing logic...
-    if (extractedDataFromPhotos.length > 0) {
-      const successfulExtractions = extractedDataFromPhotos.filter(item => item.extractedData);
-      
-      setDeliveries(successfulExtractions.map(item => ({
-        ...item.extractedData,
-        photoSetId: item.photoSetId,
-        labelPhoto: item.labelPhoto,
-        labelPreview: item.labelPreview,
-        parcelPhoto: item.parcelPhoto,
-        parcelPreview: item.parcelPreview,
-        originalPhotos: item.originalPhotos,
-        ocrText: item.ocrText,
-        ocrConfidence: item.ocrConfidence,
-        clientOcr: true,
-        source: 'client-ocr-ai-photo-temp'
-      })));
-      
-      alert(`✅ CLIENT-SIDE OCR + AI processed ${successfulExtractions.length} orders! Now upload PDA list.`);
-      setCurrentStep('upload');
-      
-    } else {
-      alert('❌ No data could be extracted from photos');
-      setCurrentStep('photo-capture');
-    }
-
-  } catch (error) {
-    console.error('Photo processing error:', error);
-    alert('Error processing photos: ' + error.message);
-    setCurrentStep('photo-capture');
-  } finally {
-    setProcessing(false);
-  }
-};
 
   // Combine REAL AI photo data with PDA list data
  // Combine REAL AI photo data with PDA list data
@@ -1406,136 +1369,127 @@ const getStepStatus = (step) => {
             </div>
 
             {/* Captured Photos Preview */}
-            {capturedPhotos.length > 0 && (
-              <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                <h3 className="font-semibold mb-3 text-gray-900">Captured Orders: {capturedPhotos.length}</h3>
-                <div className="space-y-4">
-                  {capturedPhotos.map((photoSet, index) => (
-                    <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
-                      <div className="flex items-start justify-between">
-                        {/* Photo Previews */}
-                        <div className="flex items-center space-x-4">
-                          <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
-                          <div className="flex space-x-3">
-                            {photoSet.label?.preview && (
-                              <div className="text-center">
-                                <div className="text-xs text-gray-500 mb-1">Label</div>
-                                <img 
-                                  src={photoSet.label.preview} 
-                                  alt="Label preview" 
-                                  className="w-12 h-12 object-cover rounded border"
-                                />
-                              </div>
-                            )}
-                            {photoSet.parcel?.preview && (
-                              <div className="text-center">
-                                <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                                <img 
-                                  src={photoSet.parcel.preview} 
-                                  alt="Parcel preview" 
-                                  className="w-12 h-12 object-cover rounded border"
-                                />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Extracted Data Display */}
-// In your captured photos preview section:
-
-{/* Extracted Data Display */}
-<div className="flex-1 ml-4">
-  {photoSet.extractedData ? (
-    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold text-green-800">
-          ✅ FREE OCR + AI Extracted Data:
-        </div>
-        {photoSet.ocrConfidence && (
-          <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-            Confidence: {Math.round(photoSet.ocrConfidence)}%
-          </div>
-        )}
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-        {photoSet.extractedData.clientName && (
-          <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
-        )}
-        {photoSet.extractedData.address && (
-          <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
-        )}
-        {photoSet.extractedData.phoneNumber && (
-          <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-        )}
-        {photoSet.extractedData.barcode && (
-          <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
-        )}
-        {photoSet.extractedData.sender && (
-          <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
-        )}
-        {photoSet.extractedData.weight && (
-          <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
-        )}
-      </div>
-      {/* Show OCR text */}
-      {photoSet.ocrText && (
-        <details className="mt-2">
-          <summary className="text-xs text-gray-600 cursor-pointer">
-            📝 View OCR Raw Text
-          </summary>
-          <div className="mt-1 p-2 bg-gray-100 rounded text-xs font-mono overflow-auto max-h-20">
-            {photoSet.ocrText}
-          </div>
-        </details>
-      )}
-    </div>
-  ) : photoSet.error ? (
-    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-      <div className="text-xs text-red-700">
-        ❌ OCR Processing Failed: {photoSet.error}
-      </div>
-      {photoSet.ocrText && (
-        <details className="mt-2">
-          <summary className="text-xs text-gray-600 cursor-pointer">
-            📝 View OCR Attempt
-          </summary>
-          <div className="mt-1 p-2 bg-gray-100 rounded text-xs font-mono overflow-auto max-h-20">
-            {photoSet.ocrText}
-          </div>
-        </details>
-      )}
-    </div>
-  ) : (
-    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-      <div className="text-xs text-yellow-700">
-        ⏳ FREE Client-side OCR + AI processing...
-      </div>
-    </div>
-  )}
-</div>
-
-                        <button
-                          onClick={() => removePhotoSet(photoSet.id)}
-                          className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                
-                <div className="mt-4 flex space-x-3">
-                  <button
-                    onClick={processCapturedPhotos}
-                    disabled={processing}
-                    className="flex-1 bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:bg-gray-400 transition-colors"
-                  >
-                    {processing ? 'Processing...' : `Process ${capturedPhotos.length} Orders`}
-                  </button>
-                </div>
+{capturedPhotos.length > 0 && (
+  <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+    <h3 className="font-semibold mb-3 text-gray-900">
+      Captured Orders: {capturedPhotos.length}
+      <span className="text-sm font-normal text-gray-600 ml-2">
+        (Processing automatically...)
+      </span>
+    </h3>
+    <div className="space-y-4">
+      {capturedPhotos.map((photoSet, index) => (
+        <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
+          <div className="flex items-start justify-between">
+            {/* Photo Previews */}
+            <div className="flex items-center space-x-4">
+              <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
+              <div className="flex space-x-3">
+                {photoSet.label?.preview && (
+                  <div className="text-center">
+                    <div className="text-xs text-gray-500 mb-1">Label</div>
+                    <img 
+                      src={photoSet.label.preview} 
+                      alt="Label preview" 
+                      className="w-12 h-12 object-cover rounded border"
+                    />
+                  </div>
+                )}
+                {photoSet.parcel?.preview && (
+                  <div className="text-center">
+                    <div className="text-xs text-gray-500 mb-1">Parcel</div>
+                    <img 
+                      src={photoSet.parcel.preview} 
+                      alt="Parcel preview" 
+                      className="w-12 h-12 object-cover rounded border"
+                    />
+                  </div>
+                )}
               </div>
-            )}
+              
+              {/* Processing Status */}
+              {photoSet.processing && (
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                  <span className="text-xs text-blue-600">Processing...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Extracted Data Display */}
+            <div className="flex-1 ml-4">
+              {photoSet.processed && photoSet.extractedData ? (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-green-800">
+                      ✅ Processed Successfully
+                    </div>
+                    {photoSet.ocrConfidence && (
+                      <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+                        Confidence: {Math.round(photoSet.ocrConfidence)}%
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                    {photoSet.extractedData.clientName && (
+                      <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
+                    )}
+                    {photoSet.extractedData.address && (
+                      <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
+                    )}
+                    {photoSet.extractedData.phoneNumber && (
+                      <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
+                    )}
+                    {photoSet.extractedData.barcode && (
+                      <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
+                    )}
+                  </div>
+                </div>
+              ) : photoSet.processed && photoSet.error ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                  <div className="text-xs text-red-700">
+                    ❌ Processing Failed: {photoSet.error}
+                  </div>
+                </div>
+              ) : photoSet.processing ? (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <div className="text-xs text-blue-700">
+                    🔍 Processing label with FREE OCR + AI...
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <div className="text-xs text-yellow-700">
+                    ⏳ Waiting to process...
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => removePhotoSet(photoSet.id)}
+              className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+    
+    {/* Show continue button when we have processed photos */}
+    {capturedPhotos.some(ps => ps.processed) && (
+      <div className="mt-4">
+        <button
+          onClick={() => setCurrentStep('upload')}
+          className="bg-black text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
+        >
+          Continue to PDA Upload ({capturedPhotos.filter(ps => ps.processed).length} orders ready)
+        </button>
+      </div>
+    )}
+  </div>
+)}
           </div>
         )}
 
