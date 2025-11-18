@@ -3,6 +3,8 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react'
+import { BrowserMultiFormatReader } from '@zxing/library';
+
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL
 
 // IndexedDB Utility
@@ -166,7 +168,7 @@ function HomeContent() {
   const [geocodedDeliveries, setGeocodedDeliveries] = useState([]);
   const [optimizedRoute, setOptimizedRoute] = useState([]);
   const [processing, setProcessing] = useState(false);
-  const [currentStep, setCurrentStep] = useState('photo-capture');
+const [currentStep, setCurrentStep] = useState('parcel-capture');
   const [focusedSegment, setFocusedSegment] = useState(null);
   const [activeTab, setActiveTab] = useState('route');
   const [clickedStop, setClickedStop] = useState(null);
@@ -176,9 +178,14 @@ function HomeContent() {
   const [savedRoutes, setSavedRoutes] = useState([]);
   const [showRoutesList, setShowRoutesList] = useState(false);
   const [capturedPhotos, setCapturedPhotos] = useState([]);
-  const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ label: null, parcel: null });
-  const [photoStep, setPhotoStep] = useState('label');
+const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ 
+  barcode: null, 
+  parcel: null, 
+  label: null 
+});const [photoStep, setPhotoStep] = useState('barcode');
   const [selectedImages, setSelectedImages] = useState(null);
+  const [labelPhotos, setLabelPhotos] = useState([]);
+const [currentLabelPhoto, setCurrentLabelPhoto] = useState(null);
 // Image Modal Component
 // Image Modal Component - FIXED
 // Image Modal Component - HIGH QUALITY
@@ -201,6 +208,19 @@ const ImageModal = ({ images, onClose }) => {
         <div className="flex-1 overflow-auto p-4">
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             {/* Label Photo */}
+              {/* Barcode Photo */}
+  <div className="text-center">
+    <div className="text-md font-semibold text-gray-700 mb-3">📊 Barcode</div>
+    {images.barcodePhoto ? (
+      <img 
+        src={images.barcodePhoto} 
+        alt="Barcode" 
+        className="max-w-full max-h-[50vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
+      />
+    ) : (
+      <div className="text-red-500 py-4">❌ Barcode image not available</div>
+    )}
+  </div>
             <div className="text-center">
               <div className="text-lg font-semibold text-gray-700 mb-4">📋 Shipping Label - FULL QUALITY</div>
               <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
@@ -276,8 +296,9 @@ const handlePhotoClick = (stop) => {
   console.log("Using parcel photo:", parcelPhoto?.substring(0, 100) + "...");
   
   setSelectedImages({
-    labelPhoto: labelPhoto,
-    parcelPhoto: parcelPhoto,
+    barcodePhoto: stop.barcodePhoto || stop.barcodePreview,
+    parcelPhoto: stop.parcelPhoto || stop.parcelPreview,
+    labelPhoto: stop.labelPhoto || stop.labelPreview,
     extractedData: stop.extractedData
   });
 };
@@ -513,15 +534,17 @@ useEffect(() => {
 // Handle photo capture - PROCESS IMMEDIATELY via server
 // Handle photo capture - STORE ORIGINAL QUALITY
 // Handle photo capture - PROPERLY STORE FULL QUALITY
+// Handle photo capture - BOTH photos but only process label
+// Handle photo capture - 3 STEP PROCESS
 const handlePhotoCapture = (event) => {
   const file = event.target.files[0];
   if (!file) return;
 
   const reader = new FileReader();
   reader.onloadend = () => {
-    const originalData = reader.result; // This is the full quality Base64 image
+    const originalData = reader.result;
     
-    // Create a small preview (50x50) for the UI
+    // Create preview
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
@@ -533,42 +556,41 @@ const handlePhotoCapture = (event) => {
 
       const photoData = {
         id: Date.now(),
-        data: originalData, // FULL QUALITY - keep the original Base64
-        preview: previewData, // Small preview for UI
+        data: originalData,
+        preview: previewData,
         timestamp: new Date().toISOString(),
         type: photoStep,
-        file: file // Keep the original file reference
+        file: file
       };
 
-      console.log(`📸 Captured ${photoStep} photo:`, {
-        fullQualitySize: originalData.length,
-        previewSize: previewData.length,
-        fileType: file.type,
-        fileSize: file.size
-      });
+      console.log(`📸 Captured ${photoStep} photo`);
 
-      if (photoStep === 'label') {
-        setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
+      if (photoStep === 'barcode') {
+        setCurrentOrderPhotos(prev => ({ ...prev, barcode: photoData }));
         setPhotoStep('parcel');
-      } else {
-        // Both photos captured
+      } else if (photoStep === 'parcel') {
         setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
+        setPhotoStep('label');
+      } else {
+        // All 3 photos captured
+        setCurrentOrderPhotos(prev => ({ ...prev, label: photoData }));
         
         const orderPhotos = {
           id: Date.now(),
-          label: currentOrderPhotos.label,
-          parcel: photoData,
+          barcode: currentOrderPhotos.barcode, // Barcode photo
+          parcel: currentOrderPhotos.parcel,   // Parcel photo  
+          label: photoData,                    // Label photo
           processed: false,
           processing: false
         };
         
         setCapturedPhotos(prev => [...prev, orderPhotos]);
         
-        // Process with the ORIGINAL FILE for best quality
-        processSinglePhotoOrder(orderPhotos, file);
+        // PROCESS ONLY THE LABEL FILE with AI (for delivery data)
+        processSinglePhotoOrder(orderPhotos, photoData.file);
         
-        setCurrentOrderPhotos({ label: null, parcel: null });
-        setPhotoStep('label');
+        setCurrentOrderPhotos({ barcode: null, parcel: null, label: null });
+        setPhotoStep('barcode'); // Reset to first step
       }
     };
     img.src = originalData;
@@ -652,7 +674,10 @@ const processSinglePhotoOrder = async (photoSet, labelFile) => {
 // Process captured photos with FREE Client-side OCR + OpenAI
 // Process captured photos with SERVER-SIDE OCR + OpenAI
 // Process captured photos with CLIENT-SIDE OCR + Server AI
-
+// Remove captured parcel
+const removeParcel = (parcelId) => {
+  setCapturedPhotos(prev => prev.filter(parcelSet => parcelSet.id !== parcelId));
+};
 const testImageQuality = () => {
   if (optimizedRoute.length > 0) {
     const firstStop = optimizedRoute[0];
@@ -671,84 +696,10 @@ const testImageQuality = () => {
   // Combine REAL AI photo data with PDA list data
  // Combine REAL AI photo data with PDA list data
 // Combine REAL AI photo data with PDA list data
-const combinePhotoDataWithPDA = (pdaDeliveries, photoData) => {
-  return pdaDeliveries.map(pdaDelivery => {
-    // Find matching photo data using name similarity (80% match)
-    const matchingPhoto = photoData.find(photoItem => {
-      const extracted = photoItem.extractedData;
-      
-      if (!extracted || !extracted.clientName) return false;
 
-      // Convert both names to lowercase for comparison
-      const photoName = extracted.clientName.toLowerCase().trim();
-      const pdaName = pdaDelivery.clientName.toLowerCase().trim();
-      
-      // Calculate name similarity
-      const similarity = calculateNameSimilarity(photoName, pdaName);
-      
-      console.log(`Name matching: "${photoName}" vs "${pdaName}" - Similarity: ${similarity}%`);
-      
-      // Match if similarity is 80% or higher
-      return similarity >= 80;
-    });
-
-    if (matchingPhoto) {
-      // Combine PDA data with photo data - ALWAYS include photos
-      return {
-        ...pdaDelivery, // Keep all PDA data
-        // ALWAYS include photo data
-        photoSetId: matchingPhoto.photoSetId,
-        labelPhoto: matchingPhoto.labelPhoto,
-        labelPreview: matchingPhoto.labelPreview,
-        parcelPhoto: matchingPhoto.parcelPhoto,
-        parcelPreview: matchingPhoto.parcelPreview,
-        originalPhotos: matchingPhoto.originalPhotos,
-        ocrText: matchingPhoto.ocrText,
-        ocrConfidence: matchingPhoto.ocrConfidence,
-        // Enhance with any additional data from label
-        ...(matchingPhoto.extractedData && {
-          enhancedAddress: matchingPhoto.extractedData.address || pdaDelivery.address,
-          enhancedPhone: matchingPhoto.extractedData.phoneNumber || pdaDelivery.phoneNumber,
-          enhancedName: matchingPhoto.extractedData.clientName || pdaDelivery.clientName,
-          enhancedBarcode: matchingPhoto.extractedData.barcode || pdaDelivery.barcode,
-          enhancedSender: matchingPhoto.extractedData.sender || pdaDelivery.sender,
-          enhancedWeight: matchingPhoto.extractedData.weight || pdaDelivery.weight,
-        }),
-        source: 'photo-enhanced',
-        matchConfidence: calculateNameSimilarity(
-          matchingPhoto.extractedData.clientName.toLowerCase().trim(),
-          pdaDelivery.clientName.toLowerCase().trim()
-        )
-      };
-    }
-
-    // Return original PDA data if no photo match found
-    return {
-      ...pdaDelivery,
-      source: 'pda-only'
-    };
-  });
-};
 
 // Add this helper function for name similarity calculation
-const calculateNameSimilarity = (str1, str2) => {
-  // Remove common company suffixes and clean the strings
-  const cleanStr1 = str1.replace(/\b(sl|s|l|sa|s\.a|company|corp|inc|llc)\b/gi, '').trim();
-  const cleanStr2 = str2.replace(/\b(sl|s|l|sa|s\.a|company|corp|inc|llc)\b/gi, '').trim();
-  
-  // If one string contains the other, it's a high match
-  if (cleanStr1.includes(cleanStr2) || cleanStr2.includes(cleanStr1)) {
-    return 100;
-  }
-  
-  // Calculate Levenshtein distance-based similarity
-  const distance = levenshteinDistance(cleanStr1, cleanStr2);
-  const maxLength = Math.max(cleanStr1.length, cleanStr2.length);
-  const similarity = ((maxLength - distance) / maxLength) * 100;
-  
-  return Math.round(similarity);
-};
-
+ 
 // Levenshtein distance calculation
 const levenshteinDistance = (str1, str2) => {
   const matrix = [];
@@ -780,112 +731,19 @@ const levenshteinDistance = (str1, str2) => {
   return matrix[str2.length][str1.length];
 };
   // Helper functions for matching REAL data
-  const addressesMatch = (addr1, addr2) => {
-    const cleanAddr1 = addr1.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const cleanAddr2 = addr2.toLowerCase().replace(/[^a-z0-9]/g, '');
-    return cleanAddr1.includes(cleanAddr2) || cleanAddr2.includes(cleanAddr1);
-  };
+  
 
-  const phonesMatch = (phone1, phone2) => {
-    const cleanPhone1 = phone1.replace(/\D/g, '');
-    const cleanPhone2 = phone2.replace(/\D/g, '');
-    return cleanPhone1 === cleanPhone2;
-  };
+  
 
-  const namesMatch = (name1, name2) => {
-    const cleanName1 = name1.toLowerCase().replace(/[^a-z]/g, '');
-    const cleanName2 = name2.toLowerCase().replace(/[^a-z]/g, '');
-    return cleanName1.includes(cleanName2) || cleanName2.includes(cleanName1);
-  };
+  
 
-  const barcodesMatch = (barcode1, barcode2) => {
-    return barcode1.toString() === barcode2.toString();
-  };
+  
 
   // Handle PDA/list upload and match with photos
  // Handle PDA/list upload and match with photos
 // Handle PDA/list upload - SERVER-SIDE processing
 // Handle PDA/list upload - SERVER-SIDE processing with PHOTO DATA
-const handlePDAUpload = async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-
-  setProcessing(true);
-  setCurrentStep('upload');
-  
-  try {
-    // Create FormData for file upload
-    const formData = new FormData();
-    formData.append('pdaImage', file);
-
-    // Prepare photo metadata (extracted data only, no binary images)
-    const photoDataForServer = capturedPhotos.map(photoSet => ({
-      photoSetId: photoSet.id,
-      extractedData: photoSet.extractedData,
-      ocrText: photoSet.ocrText,
-      ocrConfidence: photoSet.ocrConfidence
-    }));
-
-    // Add photo metadata to FormData
-    formData.append('photoData', JSON.stringify(photoDataForServer));
-
-    console.log(`Sending ${photoDataForServer.length} photo sets to server for matching`);
-
-    // Send to HEROKU SERVER for PDA list extraction with PHOTO MATCHING
-    const response = await fetch(`${SERVER_URL}/api/process-orders`, {
-      method: 'POST',
-      body: formData, // No Content-Type header for FormData
-    });
-
-    const data = await response.json();
-    
-    if (data.success) {
-      // Client-side - Add photo binary data back to matched deliveries
-// In your handlePDAUpload function, update the matching section:
-// Client-side - Add FULL QUALITY photo data back to matched deliveries
-const deliveriesWithPhotos = data.deliveries.map(delivery => {
-  if (delivery.source === 'photo-enhanced' && delivery.photoSetId) {
-    const originalPhotoSet = capturedPhotos.find(ps => ps.id === delivery.photoSetId);
-    if (originalPhotoSet) {
-      console.log(`🖼️ Adding FULL QUALITY photos for ${delivery.clientName}`, {
-        labelData: !!originalPhotoSet.label?.data,
-        parcelData: !!originalPhotoSet.parcel?.data
-      });
-      
-      return {
-        ...delivery,
-        // Add FULL QUALITY binary photo data
-        labelPhoto: originalPhotoSet.label?.data, // FULL QUALITY
-        labelPreview: originalPhotoSet.label?.preview,
-        parcelPhoto: originalPhotoSet.parcel?.data, // FULL QUALITY
-        parcelPreview: originalPhotoSet.parcel?.preview,
-        originalPhotos: originalPhotoSet
-      };
-    }
-  }
-  return delivery;
-});
-
-      setDeliveries(deliveriesWithPhotos);
-      
-      const matchedCount = data.matchedCount || 0;
-      const deliveriesWithBinaryPhotos = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
-      
-      alert(`✅ HEROKU SERVER: Processed ${data.extractedCount} PDA orders, ${matchedCount} matched with ${data.photoCount} photos! ${deliveriesWithBinaryPhotos} stops will show photos. Now geocoding addresses...`);
-      
-      await geocodeAddresses(deliveriesWithPhotos);
-    } else {
-      alert('❌ HEROKU SERVER PDA Processing Error: ' + data.error);
-      setCurrentStep('upload');
-    }
-    
-  } catch (error) {
-    alert('Error uploading PDA list: ' + error.message);
-    setCurrentStep('upload');
-  } finally {
-    setProcessing(false);
-  }
-};
+ 
 
 const geocodeAddresses = async (deliveriesToGeocode) => {
   if (deliveriesToGeocode.length === 0) return;
@@ -904,18 +762,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       sender: delivery.sender,
       weight: delivery.weight,
       source: delivery.source,
-      matchConfidence: delivery.matchConfidence,
-      enhancedAddress: delivery.enhancedAddress,
-      photoAddress: delivery.photoAddress,
-      // DO NOT send binary image data
-      // photoSetId: delivery.photoSetId, // Keep this to match later
-      // ocrText: delivery.ocrText, // Too large
-      // ocrConfidence: delivery.ocrConfidence,
-      // labelPhoto: delivery.labelPhoto, // REMOVE - too large
-      // labelPreview: delivery.labelPreview, // REMOVE
-      // parcelPhoto: delivery.parcelPhoto, // REMOVE - too large
-      // parcelPreview: delivery.parcelPreview, // REMOVE
-      // originalPhotos: delivery.originalPhotos // REMOVE - too large
+      photoSetId: delivery.photoSetId,
     }));
 
     console.log("Sending clean deliveries for geocoding:", cleanDeliveriesForGeocoding.length);
@@ -926,7 +773,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ 
-        addresses: cleanDeliveriesForGeocoding, // Send clean data without images
+        addresses: cleanDeliveriesForGeocoding,
         depot: seurDepot
       }),
     });
@@ -934,32 +781,31 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
     const data = await response.json();
     
     if (data.success) {
-      // RECOMBINE geocoded data with original photo data
+      // ✅ CRITICAL FIX: RECOMBINE geocoded data with ALL image data
       const deliveriesWithPhotos = data.deliveries.map((geocodedDelivery, index) => {
         const originalDelivery = deliveriesToGeocode[index];
+        
+        console.log("🔍 Restoring ALL images for:", originalDelivery.clientName, {
+          hasBarcodePhoto: !!originalDelivery.barcodePhoto,
+          hasParcelPhoto: !!originalDelivery.parcelPhoto,
+          hasLabelPhoto: !!originalDelivery.labelPhoto
+        });
+        
         return {
-          ...geocodedDelivery, // Geocoded data (lat, lng, placeName, etc.)
-          // PRESERVE ALL original data including photos
-          clientName: originalDelivery.clientName,
-          address: originalDelivery.address,
-          phoneNumber: originalDelivery.phoneNumber,
-          barcode: originalDelivery.barcode,
-          sender: originalDelivery.sender,
-          weight: originalDelivery.weight,
-          // PRESERVE PHOTO DATA from original
+          ...geocodedDelivery, // Geocoded data from server
+          // ✅ RESTORE ALL IMAGE DATA
+          barcodePhoto: originalDelivery.barcodePhoto,
+          barcodePreview: originalDelivery.barcodePreview,
+          parcelPhoto: originalDelivery.parcelPhoto, 
+          parcelPreview: originalDelivery.parcelPreview,
+          labelPhoto: originalDelivery.labelPhoto,
+          labelPreview: originalDelivery.labelPreview,
+          originalPhotos: originalDelivery.originalPhotos,
+          extractedData: originalDelivery.extractedData,
           photoSetId: originalDelivery.photoSetId,
-          ocrText: originalDelivery.ocrText,
-          ocrConfidence: originalDelivery.ocrConfidence,
           source: originalDelivery.source,
-          matchConfidence: originalDelivery.matchConfidence,
-          enhancedAddress: originalDelivery.enhancedAddress,
-          photoAddress: originalDelivery.photoAddress,
-          photoSetId: originalDelivery.photoSetId,
-labelPhoto: originalDelivery.labelPhoto, // Full quality
-labelPreview: originalDelivery.labelPreview,
-parcelPhoto: originalDelivery.parcelPhoto, // Full quality
-parcelPreview: originalDelivery.parcelPreview,
-originalPhotos: originalDelivery.originalPhotos,
+          allBarcodes: originalDelivery.allBarcodes,
+          matchedBarcode: originalDelivery.matchedBarcode
         };
       });
       
@@ -967,6 +813,13 @@ originalPhotos: originalDelivery.originalPhotos,
       
       const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
       const photosCount = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
+      
+      console.log("✅ Final geocoded deliveries with images:", deliveriesWithPhotos.map(d => ({
+        clientName: d.clientName,
+        hasBarcodePhoto: !!d.barcodePhoto,
+        hasParcelPhoto: !!d.parcelPhoto,
+        hasLabelPhoto: !!d.labelPhoto
+      })));
       
       alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! ${photosCount} stops have photos. Now optimizing route...`);
       
@@ -999,15 +852,13 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       sender: delivery.sender,
       weight: delivery.weight,
       source: delivery.source,
-      matchConfidence: delivery.matchConfidence,
-      enhancedAddress: delivery.enhancedAddress,
-      photoAddress: delivery.photoAddress,
+      photoSetId: delivery.photoSetId,
       lat: delivery.lat,
       lng: delivery.lng,
       placeName: delivery.placeName,
     }));
 
-    console.log(`🔄 Optimizing ${cleanDeliveriesForOptimization.length} stops with real geographical distances...`);
+    console.log(`🔄 Optimizing ${cleanDeliveriesForOptimization.length} stops...`);
     
     const response = await fetch(SERVER_URL+'/api/optimize-route', {
       method: 'POST',
@@ -1023,36 +874,33 @@ const optimizeRoute = async (deliveriesWithCoords) => {
     const data = await response.json();
     
     if (data.success) {
-      // RECOMBINE optimized data with original photo data
+      // ✅ CRITICAL FIX: RECOMBINE optimized data with ALL image data
       const routeWithPhotos = data.route.map((optimizedStop, index) => {
-        // Find the original delivery that matches this optimized stop
-        const originalDelivery = deliveriesWithCoords.find(d => 
-          d.clientName === optimizedStop.clientName && 
-          d.address === optimizedStop.address
-        ) || deliveriesWithCoords[index]; // Fallback to index if no match
+        // Find the original delivery with ALL images that matches this optimized stop
+        const originalDeliveryWithPhotos = deliveriesWithCoords.find(d => 
+          d.photoSetId === optimizedStop.photoSetId
+        ) || deliveriesWithCoords[index];
+        
+        console.log("🖼️ Adding ALL images to optimized stop:", optimizedStop.clientName, {
+          hasBarcodePhoto: !!originalDeliveryWithPhotos?.barcodePhoto,
+          hasParcelPhoto: !!originalDeliveryWithPhotos?.parcelPhoto,
+          hasLabelPhoto: !!originalDeliveryWithPhotos?.labelPhoto
+        });
         
         return {
-          ...optimizedStop, // Optimized route data with real distances
-          // PRESERVE ALL original data including photos
-          clientName: originalDelivery.clientName,
-          address: originalDelivery.address,
-          phoneNumber: originalDelivery.phoneNumber,
-          barcode: originalDelivery.barcode,
-          sender: originalDelivery.sender,
-          weight: originalDelivery.weight,
-          // PRESERVE PHOTO DATA
-          photoSetId: originalDelivery.photoSetId,
-          labelPhoto: originalDelivery.labelPhoto,
-          labelPreview: originalDelivery.labelPreview,
-          parcelPhoto: originalDelivery.parcelPhoto,
-          parcelPreview: originalDelivery.parcelPreview,
-          originalPhotos: originalDelivery.originalPhotos,
-          ocrText: originalDelivery.ocrText,
-          ocrConfidence: originalDelivery.ocrConfidence,
-          source: originalDelivery.source,
-          matchConfidence: originalDelivery.matchConfidence,
-          enhancedAddress: originalDelivery.enhancedAddress,
-          photoAddress: originalDelivery.photoAddress
+          ...optimizedStop, // Optimized route data from server
+          // ✅ RESTORE ALL IMAGE DATA
+          barcodePhoto: originalDeliveryWithPhotos?.barcodePhoto,
+          barcodePreview: originalDeliveryWithPhotos?.barcodePreview,
+          parcelPhoto: originalDeliveryWithPhotos?.parcelPhoto,
+          parcelPreview: originalDeliveryWithPhotos?.parcelPreview,
+          labelPhoto: originalDeliveryWithPhotos?.labelPhoto,
+          labelPreview: originalDeliveryWithPhotos?.labelPreview,
+          originalPhotos: originalDeliveryWithPhotos?.originalPhotos,
+          extractedData: originalDeliveryWithPhotos?.extractedData,
+          photoSetId: originalDeliveryWithPhotos?.photoSetId,
+          allBarcodes: originalDeliveryWithPhotos?.allBarcodes,
+          matchedBarcode: originalDeliveryWithPhotos?.matchedBarcode
         };
       });
       
@@ -1061,6 +909,14 @@ const optimizeRoute = async (deliveriesWithCoords) => {
       
       const totalDistance = calculateTotalDistance(routeWithPhotos);
       const photosCount = routeWithPhotos.filter(stop => stop.labelPhoto).length;
+      
+      console.log("✅ Final optimized route with ALL images:", routeWithPhotos.map(stop => ({
+        stop: stop.stopNumber,
+        clientName: stop.clientName,
+        hasBarcodePhoto: !!stop.barcodePhoto,
+        hasParcelPhoto: !!stop.parcelPhoto,
+        hasLabelPhoto: !!stop.labelPhoto
+      })));
       
       alert(`✅ Route optimized with ${data.optimizedCount} stops! Total distance: ${totalDistance}. ${photosCount} stops have photos.`);
     } else {
@@ -1093,6 +949,167 @@ const calculateTotalDistance = (route) => {
     return `${Math.round(totalMeters)} m`;
   } else {
     return `${(totalMeters / 1000).toFixed(1)} km`;
+  }
+}; 
+
+// Handle parcel capture (barcode + parcel photos)
+// Handle parcel capture (barcode + parcel photos)
+const handleParcelCapture = (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const originalData = reader.result;
+    
+    // Create preview
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 50;
+      canvas.height = 50;
+      ctx.drawImage(img, 0, 0, 50, 50);
+      const previewData = canvas.toDataURL('image/jpeg', 0.8);
+
+      const photoData = {
+        id: Date.now(),
+        data: originalData,
+        preview: previewData,
+        timestamp: new Date().toISOString(),
+        type: photoStep,
+        file: file
+      };
+
+      console.log(`📸 Captured ${photoStep} photo for parcel`);
+
+      if (photoStep === 'barcode') {
+        setCurrentOrderPhotos(prev => ({ ...prev, barcode: photoData }));
+        setPhotoStep('parcel');
+      } else {
+        // Both parcel photos captured
+        setCurrentOrderPhotos(prev => ({ ...prev, parcel: photoData }));
+        
+        const parcelSet = {
+          id: Date.now(),
+          barcode: currentOrderPhotos.barcode,
+          parcel: photoData,
+          barcodeProcessed: false,
+          processing: false
+        };
+        
+        setCapturedPhotos(prev => [...prev, parcelSet]);
+        
+        // PROCESS THE BARCODE with AI
+        processBarcodePhoto(parcelSet, currentOrderPhotos.barcode.file);
+        
+        setCurrentOrderPhotos({ barcode: null, parcel: null });
+        setPhotoStep('barcode'); // Reset to first step
+      }
+    };
+    img.src = originalData;
+  };
+  reader.readAsDataURL(file);
+};
+
+// Handle label capture
+const handleLabelCapture = (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const originalData = reader.result;
+    
+    // Create preview
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 50;
+      canvas.height = 50;
+      ctx.drawImage(img, 0, 0, 50, 50);
+      const previewData = canvas.toDataURL('image/jpeg', 0.8);
+
+      const labelData = {
+        id: Date.now(),
+        data: originalData,
+        preview: previewData,
+        timestamp: new Date().toISOString(),
+        file: file,
+        processing: false,
+        processed: false
+      };
+      
+      setLabelPhotos(prev => [...prev, labelData]);
+      
+      // Process the label with AI
+      processLabelPhoto(labelData, file);
+    };
+    img.src = originalData;
+  };
+  reader.readAsDataURL(file);
+};
+
+// Process label photo with AI
+const processLabelPhoto = async (labelData, labelFile) => {
+  // Set this label as processing
+  setLabelPhotos(prev => 
+    prev.map(label => label.id === labelData.id ? { ...label, processing: true } : label)
+  );
+
+  try {
+    console.log("Processing label photo via server:", labelData.id);
+
+    // Create FormData for file upload to server
+    const formData = new FormData();
+    formData.append('labelImage', labelFile);
+
+    // Send to server for processing
+    const response = await fetch(`${SERVER_URL}/api/process-single-photo`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+    
+    if (data.success && data.delivery) {
+      console.log("Server extracted data from label:", data.delivery);
+      
+      // Update this label with extracted data
+      const updatedLabel = {
+        ...labelData,
+        extractedData: data.delivery,
+        processed: true,
+        processing: false
+      };
+      
+      setLabelPhotos(prev => 
+        prev.map(label => label.id === labelData.id ? updatedLabel : label)
+      );
+      
+      console.log(`✅ Label processed successfully via server!`);
+      
+    } else {
+      throw new Error(data.error || 'Server processing failed');
+    }
+
+  } catch (error) {
+    console.error("Server label processing failed:", error);
+    
+    // Mark as processed but failed
+    const updatedLabel = {
+      ...labelData,
+      processed: true,
+      processing: false,
+      error: error.message
+    };
+    
+    setLabelPhotos(prev => 
+      prev.map(label => label.id === labelData.id ? updatedLabel : label)
+    );
+    
+    console.error(`❌ Failed to process label: ${error.message}`);
   }
 };
   // Get user's current location
@@ -1199,13 +1216,9 @@ const getStepStatus = (step) => {
   if (step === currentStep) return 'current';
   if (
     (step === 'photo-capture' && currentStep !== 'photo-capture') ||
-    (step === 'processing-photos' && currentStep === 'upload') ||
     (step === 'processing-photos' && currentStep === 'geocoding') ||
     (step === 'processing-photos' && currentStep === 'optimizing') ||
     (step === 'processing-photos' && currentStep === 'complete') ||
-    (step === 'upload' && currentStep === 'geocoding') ||
-    (step === 'upload' && currentStep === 'optimizing') ||
-    (step === 'upload' && currentStep === 'complete') ||
     (step === 'geocoding' && currentStep === 'optimizing') ||
     (step === 'geocoding' && currentStep === 'complete') ||
     (step === 'optimizing' && currentStep === 'complete')
@@ -1226,6 +1239,192 @@ const getStepStatus = (step) => {
   const removePhotoSet = (photoSetId) => {
     setCapturedPhotos(prev => prev.filter(photoSet => photoSet.id !== photoSetId));
   };
+
+  // Match parcels with labels using barcode
+// Match parcels with labels using barcode
+// Match parcels with labels using MULTIPLE barcodes
+// Match parcels with labels using MULTIPLE barcodes - FIXED IMAGE PROPAGATION
+const matchParcelsWithLabels = async () => {
+  setProcessing(true);
+  
+  // Process: Match each parcel with its label using ANY of the barcodes
+  const matchedDeliveries = capturedPhotos.map(parcelSet => {
+    // Get all barcodes from this parcel
+    const parcelBarcodes = parcelSet.barcodes || [parcelSet.barcodeFromAI].filter(Boolean);
+    
+    console.log(`🔍 Matching parcel ${parcelSet.id} with barcodes:`, parcelBarcodes);
+
+    // Find matching label by ANY of the barcodes
+    let matchingLabel = null;
+    let matchedBarcode = null;
+
+    for (const barcode of parcelBarcodes) {
+      matchingLabel = labelPhotos.find(label => {
+        const labelBarcode = label.extractedData?.barcode;
+        const isMatch = labelBarcode && barcode && labelBarcode === barcode;
+        
+        if (isMatch) {
+          console.log(`✅ MATCH FOUND: Parcel barcode "${barcode}" = Label barcode "${labelBarcode}"`);
+          matchedBarcode = barcode;
+        }
+        
+        return isMatch;
+      });
+      
+      if (matchingLabel) break; // Stop at first match
+    }
+    
+    if (matchingLabel) {
+      console.log(`✅ FINAL MATCH: Parcel ${parcelSet.id} with Label ${matchingLabel.id} using barcode: ${matchedBarcode}`);
+    } else {
+      console.log(`❌ NO MATCH: Parcel ${parcelSet.id} - Tried barcodes:`, parcelBarcodes);
+    }
+
+    // ✅ CRITICAL FIX: Preserve ALL image data
+    return {
+      ...(matchingLabel?.extractedData || {
+        clientName: 'Unknown Client',
+        address: 'Address not matched',
+        source: 'unmatched'
+      }),
+      // ✅ PRESERVE PARCEL IMAGES
+      barcodePhoto: parcelSet.barcode?.data, // Full quality barcode image
+      barcodePreview: parcelSet.barcode?.preview, // Preview barcode image
+      parcelPhoto: parcelSet.parcel?.data, // Full quality parcel image  
+      parcelPreview: parcelSet.parcel?.preview, // Preview parcel image
+      
+      // ✅ PRESERVE LABEL IMAGES
+      labelPhoto: matchingLabel?.data, // Full quality label image
+      labelPreview: matchingLabel?.preview, // Preview label image
+      
+      // ✅ PRESERVE ORIGINAL DATA
+      originalPhotos: parcelSet, // Keep original photo set
+      extractedData: matchingLabel?.extractedData,
+      photoSetId: parcelSet.id,
+      barcodeNumber: matchedBarcode || parcelBarcodes[0],
+      allBarcodes: parcelBarcodes,
+      matchedBarcode: matchedBarcode,
+      source: matchingLabel ? 'matched' : 'parcel-only',
+      matchStatus: matchingLabel ? 'matched' : 'unmatched'
+    };
+  });
+
+  const matchedCount = matchedDeliveries.filter(d => d.source === 'matched').length;
+  console.log(`📊 Matching Results: ${matchedCount}/${capturedPhotos.length} parcels matched with labels`);
+  
+  // Debug: Check if images are preserved
+  console.log('🖼️ Image Preservation Check:', matchedDeliveries.map(d => ({
+    client: d.clientName,
+    hasBarcodePhoto: !!d.barcodePhoto,
+    hasParcelPhoto: !!d.parcelPhoto, 
+    hasLabelPhoto: !!d.labelPhoto,
+    barcodeLength: d.barcodePhoto?.length,
+    parcelLength: d.parcelPhoto?.length,
+    labelLength: d.labelPhoto?.length
+  })));
+  
+  setDeliveries(matchedDeliveries);
+  await geocodeAddresses(matchedDeliveries);
+  setProcessing(false);
+};
+
+
+// Process barcode photo with AI
+// Process barcode photo with QuaggaJS (FREE barcode detection)
+// Process barcode photo with ChatGPT (multiple barcodes detection)
+
+
+
+// Detect MULTIPLE barcodes with ChatGPT
+// Process barcode photo with ChatGPT (multiple barcodes detection)
+const processBarcodePhoto = async (parcelSet, barcodeFile) => {
+  try {
+    console.log("Processing barcode image with ChatGPT for multiple barcodes:", parcelSet.id);
+
+    // Set this photo set as processing
+    setCapturedPhotos(prev => 
+      prev.map(ps => ps.id === parcelSet.id ? { ...ps, processing: true } : ps)
+    );
+
+    // Process with ChatGPT to detect ALL barcodes
+    const barcodes = await detectMultipleBarcodesWithChatGPT(barcodeFile);
+    
+    if (barcodes && barcodes.length > 0) {
+      console.log("ChatGPT detected barcodes:", barcodes);
+      
+      // Update parcel set with ALL detected barcodes
+      const updatedParcelSet = {
+        ...parcelSet,
+        barcodes: barcodes, // Store array of all barcodes
+        barcodeFromAI: barcodes[0], // Keep first one as primary for display
+        barcodeProcessed: true,
+        processing: false
+      };
+      
+      setCapturedPhotos(prev => 
+        prev.map(ps => ps.id === parcelSet.id ? updatedParcelSet : ps)
+      );
+      
+      console.log(`✅ ${barcodes.length} barcodes extracted:`, barcodes);
+      
+    } else {
+      throw new Error('No barcodes detected in image');
+    }
+
+  } catch (error) {
+    console.error("Barcode processing failed:", error);
+    
+    // Mark as processed but failed
+    const updatedParcelSet = {
+      ...parcelSet,
+      barcodeProcessed: true,
+      processing: false,
+      barcodeError: error.message
+    };
+    
+    setCapturedPhotos(prev => 
+      prev.map(ps => ps.id === parcelSet.id ? updatedParcelSet : ps)
+    );
+    
+    console.error(`❌ Failed to extract barcodes: ${error.message}`);
+  }
+};
+
+// Detect MULTIPLE barcodes with ChatGPT
+const detectMultipleBarcodesWithChatGPT = async (barcodeFile) => {
+  try {
+    console.log("Sending barcode image to ChatGPT for multiple barcode detection...");
+
+    // Create FormData for file upload to server
+    const formData = new FormData();
+    formData.append('barcodeImage', barcodeFile);
+
+    // Send to server for ChatGPT processing
+    const response = await fetch(`${SERVER_URL}/api/detect-barcodes`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+    
+    if (data.success && data.barcodes && data.barcodes.length > 0) {
+      console.log("ChatGPT detected barcodes:", data.barcodes);
+      return data.barcodes;
+    } else {
+      throw new Error(data.error || 'No barcodes detected');
+    }
+
+  } catch (error) {
+    console.error("ChatGPT barcode detection failed:", error);
+    throw new Error(`Barcode detection failed: ${error.message}`);
+  }
+};
+
+
+// Remove captured label
+const removeLabel = (labelId) => {
+  setLabelPhotos(prev => prev.filter(label => label.id !== labelId));
+};
 
   return (
     <main className="min-h-screen bg-white text-gray-900">
@@ -1416,223 +1615,266 @@ const getStepStatus = (step) => {
   )}
 
         {/* Progress Steps - Mobile Horizontal Scroll */}
-        <div className="mb-6 md:mb-8">
-          <div className="flex items-center justify-between space-x-2 md:space-x-0 overflow-x-auto pb-2 md:pb-0">
-            {['photo-capture', 'processing-photos', 'upload', 'geocoding', 'optimizing', 'complete'].map((step, index) => (
-              <div key={step} className="flex items-center flex-shrink-0">
-                <div className={`w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center border-2 ${
-                  getStepStatus(step) === 'completed' ? 'bg-green-500 border-green-500 text-white' :
-                  getStepStatus(step) === 'current' ? 'bg-black border-black text-white' :
-                  'bg-gray-100 border-gray-300 text-gray-400'
-                }`}>
-                  {getStepStatus(step) === 'completed' ? '✓' : index + 1}
-                </div>
-                <div className={`ml-2 text-xs md:text-sm ${
-                  getStepStatus(step) === 'current' ? 'text-gray-900 font-semibold' : 'text-gray-600'
-                } hidden sm:block`}>
-                  {step === 'photo-capture' && 'Take Photos'}
-                  {step === 'processing-photos' && 'AI Process'}
-                  {step === 'upload' && 'Match PDA'}
-                  {step === 'geocoding' && 'Geocode'}
-                  {step === 'optimizing' && 'Optimize'}
-                  {step === 'complete' && 'Complete'}
-                </div>
-                {index < 5 && (
-                  <div className={`w-4 md:w-12 h-1 mx-2 md:mx-2 ${
-                    getStepStatus(step) === 'completed' ? 'bg-green-500' : 'bg-gray-200'
-                  }`} />
-                )}
-              </div>
-            ))}
-          </div>
+{/* Progress Steps - Mobile Horizontal Scroll */}
+<div className="mb-6 md:mb-8">
+  <div className="flex items-center justify-between space-x-2 md:space-x-0 overflow-x-auto pb-2 md:pb-0">
+    {['parcel-capture', 'label-capture', 'geocoding', 'optimizing', 'complete'].map((step, index) => (
+      <div key={step} className="flex items-center flex-shrink-0">
+        <div className={`w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center border-2 ${
+          getStepStatus(step) === 'completed' ? 'bg-green-500 border-green-500 text-white' :
+          getStepStatus(step) === 'current' ? 'bg-black border-black text-white' :
+          'bg-gray-100 border-gray-300 text-gray-400'
+        }`}>
+          {getStepStatus(step) === 'completed' ? '✓' : index + 1}
         </div>
+        <div className={`ml-2 text-xs md:text-sm ${
+          getStepStatus(step) === 'current' ? 'text-gray-900 font-semibold' : 'text-gray-600'
+        } hidden sm:block`}>
+          {step === 'parcel-capture' && 'Capture Parcels'}
+          {step === 'label-capture' && 'Capture Labels'}
+          {step === 'geocoding' && 'Geocode'}
+          {step === 'optimizing' && 'Optimize'}
+          {step === 'complete' && 'Complete'}
+        </div>
+        {index < 4 && (
+          <div className={`w-4 md:w-12 h-1 mx-2 md:mx-2 ${
+            getStepStatus(step) === 'completed' ? 'bg-green-500' : 'bg-gray-200'
+          }`} />
+        )}
+      </div>
+    ))}
+  </div>
+</div>
 
         {/* Photo Capture Section */}
-        {currentStep === 'photo-capture' && !optimizedRoute.length && (
-          <div className="mb-6 md:mb-8 p-4 md:p-6 bg-white rounded-lg border border-gray-200 shadow-sm">
-            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">
-              {photoStep === 'label' ? '📋 Capture Label Photo' : '📦 Capture Parcel Photo'}
-            </h2>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 mb-6">
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                <div className="text-3xl md:text-4xl mb-3">📋</div>
-                <div className="font-semibold mb-2 text-gray-900">Label Photo</div>
-                <div className="text-gray-600 text-sm mb-4">
-                  Close-up of shipping label with address and details
-                </div>
-                <div className={`text-xs px-3 py-1 rounded-full ${
-                  currentOrderPhotos.label ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                }`}>
-                  {currentOrderPhotos.label ? '✓ Captured' : 'Pending'}
-                </div>
-              </div>
+        {/* Photo Capture Section */}
+{/* Parcel Capture Step */}
+{/* Parcel Capture Step */}
+{/* Parcel Capture Step - ADD THIS BEFORE LABEL CAPTURE */}
+{currentStep === 'parcel-capture' && !optimizedRoute.length && (
+  <div className="mb-6 md:mb-8 p-4 md:p-6 bg-white rounded-lg border border-gray-200 shadow-sm">
+    <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">
+      📦 Capture Parcel Photos (Barcode + Parcel)
+    </h2>
+    
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 mb-6">
+      {/* Barcode Photo */}
+      <div className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        photoStep === 'barcode' ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
+      }`}>
+        <div className="text-3xl md:text-4xl mb-3">📊</div>
+        <div className="font-semibold mb-2 text-gray-900">Barcode Photo</div>
+        <div className="text-gray-600 text-sm mb-4">
+          Close-up of barcode on parcel
+        </div>
+        <div className={`text-xs px-3 py-1 rounded-full ${
+          currentOrderPhotos.barcode ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+        }`}>
+          {currentOrderPhotos.barcode ? '✓ Captured' : 'Step 1'}
+        </div>
+      </div>
 
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                <div className="text-3xl md:text-4xl mb-3">📦</div>
-                <div className="font-semibold mb-2 text-gray-900">Parcel Photo</div>
-                <div className="text-gray-600 text-sm mb-4">
-                  Far shot to recognize the parcel
-                </div>
-                <div className={`text-xs px-3 py-1 rounded-full ${
-                  currentOrderPhotos.parcel ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                }`}>
-                  {currentOrderPhotos.parcel ? '✓ Captured' : 'Pending'}
-                </div>
-              </div>
-            </div>
+      {/* Parcel Photo */}
+      <div className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        photoStep === 'parcel' ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
+      }`}>
+        <div className="text-3xl md:text-4xl mb-3">📦</div>
+        <div className="font-semibold mb-2 text-gray-900">Parcel Photo</div>
+        <div className="text-gray-600 text-sm mb-4">
+          Far shot to recognize parcel
+        </div>
+        <div className={`text-xs px-3 py-1 rounded-full ${
+          currentOrderPhotos.parcel ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
+        }`}>
+          {currentOrderPhotos.parcel ? '✓ Captured' : 'Step 2'}
+        </div>
+      </div>
+    </div>
 
-            <div className="text-center">
-              <input 
-                type="file" 
-                accept="image/*"
-                capture="environment"
-                onChange={handlePhotoCapture}
-                className="hidden"
-                id="photo-capture"
-              />
-              <label 
-                htmlFor="photo-capture"
-                className="cursor-pointer inline-block bg-black text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
-              >
-                {photoStep === 'label' ? '📷 Take Label Photo' : '📷 Take Parcel Photo'}
-              </label>
-              
-              <div className="mt-4 text-sm text-gray-600">
-                {photoStep === 'label' 
-                  ? 'Take a clear photo of the shipping label' 
-                  : 'Take a photo of the whole parcel for recognition'}
-              </div>
-            </div>
+    <div className="text-center">
+      <input 
+        type="file" 
+        accept="image/*"
+        capture="environment"
+        onChange={handleParcelCapture}
+        className="hidden"
+        id="parcel-capture"
+      />
+      <label 
+        htmlFor="parcel-capture"
+        className="cursor-pointer inline-block bg-black text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
+      >
+        {photoStep === 'barcode' ? '📷 Take Barcode Photo' : '📷 Take Parcel Photo'}
+      </label>
+      
+      <div className="mt-4 text-sm text-gray-600">
+        {photoStep === 'barcode' ? 'Take a clear photo of the barcode on the parcel' : 'Take a photo of the whole parcel for visual reference'}
+      </div>
+    </div>
 
-            {/* Captured Photos Preview */}
+    {/* Captured Parcels Preview */}
+  {/* Captured Parcels Preview */}
+
+{/* Captured Parcels Preview */}
+{/* Captured Parcels Preview */}
 {capturedPhotos.length > 0 && (
   <div className="mt-6 p-4 bg-gray-50 rounded-lg">
     <h3 className="font-semibold mb-3 text-gray-900">
-      Captured Orders: {capturedPhotos.length}
-      <span className="text-sm font-normal text-gray-600 ml-2">
-        (Processing automatically via OpenAI...)
-      </span>
+      Captured Parcels: {capturedPhotos.length}
     </h3>
-    <div className="space-y-4">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {capturedPhotos.map((photoSet, index) => (
-        <div key={photoSet.id} className="p-4 bg-white rounded-lg border border-gray-200">
-          <div className="flex items-start justify-between">
-            {/* Photo Previews */}
-            <div className="flex items-center space-x-4">
-              <div className="text-sm font-medium text-gray-900">Order {index + 1}</div>
-              <div className="flex space-x-3">
-                {photoSet.label?.preview && (
-                  <div className="text-center">
-                    <div className="text-xs text-gray-500 mb-1">Label</div>
-                    <img 
-                      src={photoSet.label.preview} 
-                      alt="Label preview" 
-                      className="w-12 h-12 object-cover rounded border"
-                    />
-                  </div>
-                )}
-                {photoSet.parcel?.preview && (
-                  <div className="text-center">
-                    <div className="text-xs text-gray-500 mb-1">Parcel</div>
-                    <img 
-                      src={photoSet.parcel.preview} 
-                      alt="Parcel preview" 
-                      className="w-12 h-12 object-cover rounded border"
-                    />
-                  </div>
-                )}
+        <div key={photoSet.id} className="text-center p-3 bg-white rounded border relative">
+          {/* Remove Button */}
+          <button
+            onClick={() => removeParcel(photoSet.id)}
+            className="absolute -top-2 -right-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs hover:bg-red-600 transition-colors"
+            title="Remove Parcel"
+          >
+            ✕
+          </button>
+          
+          <div className="text-sm font-medium text-gray-900 mb-2">Parcel {index + 1}</div>
+          <div className="flex justify-center space-x-2">
+            {photoSet.barcode?.preview && (
+              <img src={photoSet.barcode.preview} alt="Barcode" className="w-8 h-8 object-cover rounded border"/>
+            )}
+            {photoSet.parcel?.preview && (
+              <img src={photoSet.parcel.preview} alt="Parcel" className="w-8 h-8 object-cover rounded border"/>
+            )}
+          </div>
+          
+          {/* Show barcode processing status */}
+          {photoSet.barcodeProcessed && photoSet.barcodes && (
+            <div className="text-xs mt-1">
+              <div className="text-green-600">
+                {photoSet.barcodes.length} barcode(s)
               </div>
-              
-              {/* Processing Status */}
-              {photoSet.processing && (
-                <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                  <span className="text-xs text-blue-600">Processing via OpenAI...</span>
+              {photoSet.barcodes.slice(0, 2).map((barcode, i) => (
+                <div key={i} className="text-gray-600 truncate" title={barcode}>
+                  {barcode}
                 </div>
+              ))}
+              {photoSet.barcodes.length > 2 && (
+                <div className="text-gray-500">+{photoSet.barcodes.length - 2} more</div>
               )}
             </div>
-
-{/* Extracted Data Display */}
-<div className="flex-1 ml-4">
-  {photoSet.processed && photoSet.extractedData ? (
-    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold text-green-800">
-          ✅ Processed via Server
-        </div>
-        <div className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-          Server Processing
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-        {photoSet.extractedData.clientName && (
-          <div><span className="font-medium text-gray-700">Name:</span> {photoSet.extractedData.clientName}</div>
-        )}
-        {photoSet.extractedData.address && (
-          <div><span className="font-medium text-gray-700">Address:</span> {photoSet.extractedData.address}</div>
-        )}
-        {photoSet.extractedData.phoneNumber && (
-          <div><span className="font-medium text-gray-700">Phone:</span> {photoSet.extractedData.phoneNumber}</div>
-        )}
-        {photoSet.extractedData.barcode && (
-          <div><span className="font-medium text-gray-700">Barcode:</span> {photoSet.extractedData.barcode}</div>
-        )}
-        {photoSet.extractedData.sender && (
-          <div><span className="font-medium text-gray-700">Sender:</span> {photoSet.extractedData.sender}</div>
-        )}
-        {photoSet.extractedData.weight && (
-          <div><span className="font-medium text-gray-700">Weight:</span> {photoSet.extractedData.weight}</div>
-        )}
-      </div>
-    </div>
-  ) : photoSet.processed && photoSet.error ? (
-    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-      <div className="text-xs text-red-700">
-        ❌ Server Processing Failed: {photoSet.error}
-      </div>
-    </div>
-  ) : photoSet.processing ? (
-    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-      <div className="text-xs text-blue-700">
-        🔍 Processing via Server + OpenAI...
-      </div>
-    </div>
-  ) : (
-    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-      <div className="text-xs text-yellow-700">
-        ⏳ Waiting to process...
-      </div>
-    </div>
-  )}
-</div>
-
-            <button
-              onClick={() => removePhotoSet(photoSet.id)}
-              className="text-red-500 hover:text-red-700 text-sm font-medium ml-4"
-            >
-              Remove
-            </button>
-          </div>
+          )}
+          {photoSet.processing && (
+            <div className="text-xs text-blue-600 mt-1">Detecting barcodes...</div>
+          )}
+          {photoSet.barcodeError && (
+            <div className="text-xs text-red-600 mt-1">Barcode error</div>
+          )}
         </div>
       ))}
     </div>
     
-    {/* Show continue button when we have processed photos */}
-    {capturedPhotos.some(ps => ps.processed) && (
+    {/* ✅✅✅ ADD BACK THE CONTINUE BUTTON ✅✅✅ */}
+    <div className="mt-4">
+      <button
+        onClick={() => setCurrentStep('label-capture')}
+        className="bg-black text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
+      >
+        Continue to Label Capture ({capturedPhotos.length} parcels ready)
+      </button>
+    </div>
+    {/* ✅✅✅ ADD BACK THE CONTINUE BUTTON ✅✅✅ */}
+    
+  </div>
+)}
+  </div>
+)}
+
+{/* Label Capture Step - THIS COMES AFTER PARCEL CAPTURE */}
+{currentStep === 'label-capture' && !optimizedRoute.length && (
+  <div className="mb-6 md:mb-8 p-4 md:p-6 bg-white rounded-lg border border-gray-200 shadow-sm">
+    <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">
+      📋 Capture Label Photos
+    </h2>
+    
+    <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors mb-6">
+      <div className="text-4xl md:text-6xl mb-4">📋</div>
+      <div className="font-semibold mb-2 text-gray-900 text-lg">Shipping Labels</div>
+      <div className="text-gray-600 text-sm mb-4 max-w-md mx-auto">
+        Take photos of shipping labels. We'll match them with parcels using barcode numbers.
+      </div>
+    </div>
+
+    <div className="text-center">
+      <input 
+        type="file" 
+        accept="image/*"
+        capture="environment"
+        onChange={handleLabelCapture}
+        className="hidden"
+        id="label-capture"
+      />
+      <label 
+        htmlFor="label-capture"
+        className="cursor-pointer inline-block bg-black text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
+      >
+        📷 Capture Label Photo
+      </label>
+      
+      <div className="mt-4 text-sm text-gray-600">
+        AI will extract delivery data and barcode from each label
+      </div>
+    </div>
+
+    {/* Captured Labels Preview */}
+   {/* Captured Labels Preview */}
+{labelPhotos.length > 0 && (
+  <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+    <h3 className="font-semibold mb-3 text-gray-900">
+      Captured Labels: {labelPhotos.length}
+      <span className="text-sm font-normal text-gray-600 ml-2">
+        (Processing automatically...)
+      </span>
+    </h3>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {labelPhotos.map((label, index) => (
+        <div key={label.id} className="text-center p-3 bg-white rounded border relative">
+          {/* Remove Button */}
+          <button
+            onClick={() => removeLabel(label.id)}
+            className="absolute -top-2 -right-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs hover:bg-red-600 transition-colors"
+            title="Remove Label"
+          >
+            ✕
+          </button>
+          
+          <div className="text-sm font-medium text-gray-900 mb-2">Label {index + 1}</div>
+          {label.preview && (
+            <img src={label.preview} alt="Label" className="w-12 h-12 object-cover rounded border mx-auto"/>
+          )}
+          {label.processing && (
+            <div className="text-xs text-blue-600 mt-1">Processing...</div>
+          )}
+          {label.extractedData && (
+            <div className="text-xs text-green-600 mt-1">✓ Processed</div>
+          )}
+          {label.extractedData?.barcode && (
+            <div className="text-xs text-gray-600 mt-1">Barcode: {label.extractedData.barcode}</div>
+          )}
+        </div>
+      ))}
+    </div>
+    
+    {labelPhotos.some(label => label.processed) && (
       <div className="mt-4">
         <button
-          onClick={() => setCurrentStep('upload')}
+          onClick={matchParcelsWithLabels}
           className="bg-black text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
         >
-          Continue to PDA Upload ({capturedPhotos.filter(ps => ps.processed).length} orders ready)
+          Match & Continue ({labelPhotos.filter(l => l.processed).length} labels processed)
         </button>
       </div>
     )}
   </div>
 )}
-          </div>
-        )}
+  </div>
+)}
 
         {/* Processing Photos Status */}
 {/* Processing Photos Status */}
@@ -1653,111 +1895,7 @@ const getStepStatus = (step) => {
   </div>
 )}
 
-        {/* PDA/List Upload Section - FOR MATCHING WITH PHOTOS */}
-        {currentStep === 'upload' && !optimizedRoute.length && (
-          <div className="mb-6 md:mb-8 p-4 md:p-6 bg-white rounded-lg border border-gray-200 shadow-sm">
-            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 text-gray-900">
-              📄 Upload PDA List to Match with {capturedPhotos.length} Photos
-            </h2>
-            
-            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center space-x-2">
-                <div className="text-blue-500">ℹ️</div>
-                <div className="text-sm text-blue-700">
-                  We found {capturedPhotos.length} orders from photos. Now upload your PDA/delivery list to match with system data.
-                </div>
-              </div>
-            </div>
-
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 md:p-8 text-center hover:border-gray-400 transition-colors">
-              <input 
-                type="file" 
-                accept="image/*"
-                onChange={handlePDAUpload}
-                disabled={processing}
-                className="hidden"
-                id="pda-upload"
-              />
-              <label 
-                htmlFor="pda-upload"
-                className="cursor-pointer block"
-              >
-                <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
-                <div className="text-base md:text-lg font-semibold mb-2 text-gray-900">
-                  {processing ? 'Matching with photos...' : 'Upload PDA/Delivery List'}
-                </div>
-                <div className="text-gray-600 text-xs md:text-sm mb-4">
-                  We'll match your {capturedPhotos.length} captured photos with the system delivery list
-                </div>
-                <button 
-                  disabled={processing}
-                  className="bg-black text-white px-4 md:px-6 py-2 md:py-3 rounded-lg font-semibold hover:bg-gray-800 disabled:bg-gray-400 disabled:text-gray-200 transition-colors text-sm md:text-base w-full md:w-auto"
-                >
-                  {processing ? 'Processing...' : 'Upload PDA List'}
-                </button>
-              </label>
-            </div>
-            
-            {/* Show photo previews that will be matched */}
-            {capturedPhotos.length > 0 && (
-              <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                <h4 className="font-semibold mb-3 text-gray-900">
-                  Photos to be matched ({capturedPhotos.length})
-                </h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {capturedPhotos.slice(0, 4).map((photoSet, index) => (
-                    <div key={photoSet.id} className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Order {index + 1}</div>
-                      <div className="flex space-x-1 justify-center">
-                        {photoSet.label?.preview && (
-                          <img 
-                            src={photoSet.label.preview} 
-                            alt="Label" 
-                            className="w-8 h-8 object-cover rounded border"
-                          />
-                        )}
-                        {photoSet.parcel?.preview && (
-                          <img 
-                            src={photoSet.parcel.preview} 
-                            alt="Parcel" 
-                            className="w-8 h-8 object-cover rounded border"
-                          />
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {capturedPhotos.length > 4 && (
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">And {capturedPhotos.length - 4} more...</div>
-                      <div className="w-16 h-8 bg-gray-200 rounded flex items-center justify-center">
-                        <span className="text-xs text-gray-600">+{capturedPhotos.length - 4}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            
-{processing && currentStep === 'upload' && (
-  <div className="mb-4 md:mb-6 p-3 md:p-4 bg-purple-50 rounded-lg border border-purple-200">
-    <div className="flex items-center justify-between">
-      <div className="flex items-center space-x-2 md:space-x-3">
-        <div className="w-2 h-2 md:w-3 md:h-3 bg-purple-500 rounded-full animate-pulse"></div>
-        <div className="text-purple-900 text-sm md:text-base">
-          🖥️ SERVER processing PDA list...
-        </div>
-      </div>
-      <div className="text-xs md:text-sm text-purple-700">
-        Server-side extraction
-      </div>
-    </div>
-    <div className="mt-2 text-xs text-purple-600">
-      Using FREE OCR + AI on server to extract delivery data
-    </div>
-  </div>
-)}
-          </div>
-        )}
+        
 
         {/* Processing Status */}
         {processing && (currentStep === 'geocoding' || currentStep === 'optimizing') && (
@@ -1856,6 +1994,12 @@ const getStepStatus = (step) => {
           <div className="min-w-0 flex-1">
             <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
             <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
+            {/* ✅ ADD SENDER INFORMATION */}
+            {stop.sender && (
+              <div className="text-xs text-blue-600 truncate mt-1">
+                From: {stop.sender}
+              </div>
+            )}
           </div>
         </div>
         <div className="text-right flex-shrink-0 ml-2">
@@ -1872,93 +2016,105 @@ const getStepStatus = (step) => {
       </div>
     </div>
 
-    {/* Photos section - NOT clickable for map focus */}
-{/* Photos section - Clickable for full size view */}
-
-
-{/* Photos section - Clickable for full size view */}
-{(stop.labelPreview || stop.parcelPreview) && (
-  <div className="mb-3">
-    <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-    <div className="flex space-x-3">
-      {stop.labelPreview && (
-        <div 
-          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-          onClick={() => handlePhotoClick({
-            labelPhoto: stop.labelPhoto || stop.labelPreview,
-            parcelPhoto: stop.parcelPhoto || stop.parcelPreview,
-            extractedData: stop.extractedData
-          })}
-        >
-          <div className="text-xs text-gray-500 mb-1">Label</div>
-          <img 
-            src={stop.labelPreview} 
-            alt="Label" 
-            className="w-12 h-12 object-cover rounded border shadow-sm"
-          />
-          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+    {/* Rest of your photos section remains the same */}
+    {(stop.barcodePreview || stop.parcelPreview || stop.labelPreview) && (
+      <div className="mb-3">
+        <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+        <div className="flex space-x-2">
+          {stop.barcodePreview && (
+            <div 
+              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+              onClick={() => handlePhotoClick(stop)}
+            >
+              <div className="text-xs text-gray-500 mb-1">📊 Barcode</div>
+              <img 
+                src={stop.barcodePreview} 
+                alt="Barcode" 
+                className="w-10 h-10 object-cover rounded border shadow-sm"
+              />
+            </div>
+          )}
+          {stop.parcelPreview && (
+            <div 
+              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+              onClick={() => handlePhotoClick(stop)}
+            >
+              <div className="text-xs text-gray-500 mb-1">📦 Parcel</div>
+              <img 
+                src={stop.parcelPreview} 
+                alt="Parcel" 
+                className="w-10 h-10 object-cover rounded border shadow-sm"
+              />
+            </div>
+          )}
+          {stop.labelPreview && (
+            <div 
+              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+              onClick={() => handlePhotoClick(stop)}
+            >
+              <div className="text-xs text-gray-500 mb-1">📋 Label</div>
+              <img 
+                src={stop.labelPreview} 
+                alt="Label" 
+                className="w-10 h-10 object-cover rounded border shadow-sm"
+              />
+            </div>
+          )}
         </div>
-      )}
-      {stop.parcelPreview && (
-        <div 
-          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-          onClick={() => handlePhotoClick({
-            labelPhoto: stop.labelPhoto || stop.labelPreview,
-            parcelPhoto: stop.parcelPhoto || stop.parcelPreview,
-            extractedData: stop.extractedData
-          })}
-        >
-          <div className="text-xs text-gray-500 mb-1">Parcel</div>
-          <img 
-            src={stop.parcelPreview} 
-            alt="Parcel" 
-            className="w-12 h-12 object-cover rounded border shadow-sm"
-          />
-          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
-        </div>
-      )}
-    </div>
-  </div>
-)}
+        <div className="text-xs text-blue-600 mt-1 text-center">Click any photo to enlarge</div>
+      </div>
+    )}
+
     {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
     {clickedStop === index && (
       <div className="mt-4">
         {/* Show full-size images between Get Directions and the actual directions */}
-{(stop.labelPhoto || stop.parcelPhoto) && (
-  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-    <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      {stop.labelPhoto && (
-        <div 
-          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-          onClick={() => handlePhotoClick(stop)}
-        >
-          <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
-          <img 
-            src={stop.labelPhoto} 
-            alt="Shipping Label" 
-            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-          />
-          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
-        </div>
-      )}
-      {stop.parcelPhoto && (
-        <div 
-          className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-          onClick={() => handlePhotoClick(stop)}
-        >
-          <div className="text-xs text-gray-500 mb-1">Parcel View</div>
-          <img 
-            src={stop.parcelPhoto} 
-            alt="Parcel" 
-            className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-          />
-          <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
-        </div>
-      )}
-    </div>
-  </div>
-)}
+        {(stop.labelPhoto || stop.parcelPhoto) && (
+          <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+            <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {stop.labelPhoto && (
+                <div 
+                  className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                  onClick={() => handlePhotoClick(stop)}
+                >
+                  <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+                  <img 
+                    src={stop.labelPhoto} 
+                    alt="Shipping Label" 
+                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                  />
+                  <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+                </div>
+              )}
+              {stop.parcelPhoto && (
+                <div 
+                  className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                  onClick={() => handlePhotoClick(stop)}
+                >
+                  <div className="text-xs text-gray-500 mb-1">Parcel View</div>
+                  <img 
+                    src={stop.parcelPhoto} 
+                    alt="Parcel" 
+                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                  />
+                  <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ✅ ADD SENDER INFO IN FOCUSED VIEW TOO */}
+        {stop.sender && (
+          <div className="mb-3 p-3 bg-blue-50 rounded-lg">
+            <div className="text-xs md:text-sm text-gray-600 mb-1 font-semibold">Sender Information</div>
+            <div className="text-sm text-blue-700">{stop.sender}</div>
+            {stop.weight && (
+              <div className="text-xs text-gray-600 mt-1">Weight: {stop.weight}</div>
+            )}
+          </div>
+        )}
 
         {!userLocation && !isGettingLocation && (
           <button
