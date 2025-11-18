@@ -40,22 +40,24 @@ class SeurDB {
     });
   }
 
-  async saveRoute(routeData) {
-    if (!this.db) await this.init();
+  // In your SeurDB class, add deliveryStatus to saveRoute
+async saveRoute(routeData) {
+  if (!this.db) await this.init();
+  
+  return new Promise((resolve, reject) => {
+    const transaction = this.db.transaction(['routes'], 'readwrite');
+    const store = transaction.objectStore('routes');
     
-    return new Promise((resolve, reject) => {
-      const transaction = this.db.transaction(['routes'], 'readwrite');
-      const store = transaction.objectStore('routes');
-      
-      const request = store.put({
-        ...routeData,
-        createdAt: new Date().toISOString()
-      });
-
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+    const request = store.put({
+      ...routeData,
+      deliveryStatus: routeData.deliveryStatus || {}, // ✅ Add delivery status
+      createdAt: new Date().toISOString()
     });
-  }
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
 
   async getRoute(routeId) {
     if (!this.db) await this.init();
@@ -177,6 +179,8 @@ const [currentStep, setCurrentStep] = useState('parcel-capture');
   const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [savedRoutes, setSavedRoutes] = useState([]);
   const [showRoutesList, setShowRoutesList] = useState(false);
+  const [deliveryStatus, setDeliveryStatus] = useState({});
+
   const [capturedPhotos, setCapturedPhotos] = useState([]);
 const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ 
   barcode: null, 
@@ -437,6 +441,7 @@ const clearSavedData = async () => {
 
   // Create new route
  // Create new route - UPDATED to preserve state
+// In createNewRoute, add deliveryStatus
 const createNewRoute = async () => {
   if (optimizedRoute.length > 0 && !routeId && dbReady) {
     const routeDate = new Date().toISOString().split('T')[0];
@@ -455,6 +460,7 @@ const createNewRoute = async () => {
       geocodedDeliveries: geocodedDeliveries,
       optimizedRoute: optimizedRoute,
       photos: capturedPhotos,
+      deliveryStatus: deliveryStatus, // ✅ Save delivery status
       createdAt: new Date().toISOString()
     };
     
@@ -471,6 +477,7 @@ const createNewRoute = async () => {
   setDeliveries([]);
   setGeocodedDeliveries([]);
   setOptimizedRoute([]);
+  setDeliveryStatus({}); // ✅ Reset delivery status
   setCurrentStep('photo-capture');
   setClickedStop(null);
   setFocusedSegment(null);
@@ -483,6 +490,7 @@ const createNewRoute = async () => {
 
   // Load route by ID
   // Load route by ID - UPDATED to restore complete state
+// In your loadRoute function, add this:
 const loadRoute = async (routeId) => {
   try {
     const route = await seurDB.getRoute(routeId);
@@ -493,13 +501,43 @@ const loadRoute = async (routeId) => {
       if (route.photos) {
         setCapturedPhotos(route.photos);
       }
-      setCurrentStep('complete'); // Always set to complete for loaded routes
+      // ✅ Load delivery status
+      setDeliveryStatus(route.deliveryStatus || {});
+      setCurrentStep('complete');
       router.push(`/?route=${routeId}`);
     }
     setShowRoutesList(false);
   } catch (error) {
     console.error('Error loading route:', error);
   }
+};
+
+// Mark stop as delivered
+const markAsDelivered = async (stopIndex) => {
+  const newStatus = {
+    ...deliveryStatus,
+    [stopIndex]: 'delivered'
+  };
+  
+  setDeliveryStatus(newStatus);
+  
+  // ✅ Save to IndexedDB
+  if (dbReady && optimizedRoute.length > 0) {
+    try {
+      const currentRoute = await seurDB.getRoute(routeId || Date.now());
+      if (currentRoute) {
+        await seurDB.saveRoute({
+          ...currentRoute,
+          deliveryStatus: newStatus
+        });
+      }
+    } catch (error) {
+      console.error('Error saving delivery status:', error);
+    }
+  }
+  
+  const stop = optimizedRoute[stopIndex];
+  console.log(`✅ Marked as delivered: ${stop.clientName}`);
 };
 
 
@@ -1972,29 +2010,33 @@ const removeLabel = (labelId) => {
       </div>
       
       <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
-       {optimizedRoute.map((stop, index) => (
-  <div 
-    key={index}
-    className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all ${
-      clickedStop === index 
-        ? 'border-2 border-black bg-gray-50' 
-        : 'border-0'
-    }`}
-  >
-    {/* Clickable area for name/address - will focus on map */}
+       {optimizedRoute.map((stop, index) => {
+  const isDelivered = deliveryStatus[index] === 'delivered';
+  
+  return (
     <div 
-      className="cursor-pointer"
-      onClick={(e) => handleStopClick(index, e)}
+      key={index}
+      className={`p-4 md:p-6 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-all ${
+        clickedStop === index 
+          ? 'border-2 border-black bg-gray-50' 
+          : 'border-0'
+      } ${isDelivered ? 'bg-green-50 opacity-75' : ''}`}
     >
+      {/* Delivery Status Header */}
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center">
-          <div className="w-6 h-6 md:w-8 md:h-8 bg-black text-white rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3">
-            {stop.stopNumber}
+          <div className={`w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3 ${
+            isDelivered ? 'bg-green-500 text-white' : 'bg-black text-white'
+          }`}>
+            {isDelivered ? '✓' : stop.stopNumber}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-semibold text-base md:text-lg text-gray-900 truncate">{stop.clientName}</div>
+            <div className={`font-semibold text-base md:text-lg truncate ${
+              isDelivered ? 'text-green-700 line-through' : 'text-gray-900'
+            }`}>
+              {stop.clientName}
+            </div>
             <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
-            {/* ✅ ADD SENDER INFORMATION */}
             {stop.sender && (
               <div className="text-xs text-blue-600 truncate mt-1">
                 From: {stop.sender}
@@ -2007,159 +2049,177 @@ const removeLabel = (labelId) => {
             📍 {stop.distanceFromPrevious}
           </div>
           <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
+          
+          {/* Delivery Status Button */}
+          {!isDelivered ? (
+            <button
+              onClick={() => markAsDelivered(index)}
+              className="mt-2 bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
+            >
+              Mark Delivered
+            </button>
+          ) : (
+            <div className="mt-2 text-green-600 font-semibold text-sm whitespace-nowrap">
+              ✅ Delivered
+            </div>
+          )}
         </div>
       </div>
       
       <div className="mb-3 md:mb-4">
         <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
-        <div className="text-gray-900 text-sm md:text-base break-words">{stop.address}</div>
-      </div>
-    </div>
-
-    {/* Rest of your photos section remains the same */}
-    {(stop.barcodePreview || stop.parcelPreview || stop.labelPreview) && (
-      <div className="mb-3">
-        <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
-        <div className="flex space-x-2">
-          {stop.barcodePreview && (
-            <div 
-              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-              onClick={() => handlePhotoClick(stop)}
-            >
-              <div className="text-xs text-gray-500 mb-1">📊 Barcode</div>
-              <img 
-                src={stop.barcodePreview} 
-                alt="Barcode" 
-                className="w-10 h-10 object-cover rounded border shadow-sm"
-              />
-            </div>
-          )}
-          {stop.parcelPreview && (
-            <div 
-              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-              onClick={() => handlePhotoClick(stop)}
-            >
-              <div className="text-xs text-gray-500 mb-1">📦 Parcel</div>
-              <img 
-                src={stop.parcelPreview} 
-                alt="Parcel" 
-                className="w-10 h-10 object-cover rounded border shadow-sm"
-              />
-            </div>
-          )}
-          {stop.labelPreview && (
-            <div 
-              className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-              onClick={() => handlePhotoClick(stop)}
-            >
-              <div className="text-xs text-gray-500 mb-1">📋 Label</div>
-              <img 
-                src={stop.labelPreview} 
-                alt="Label" 
-                className="w-10 h-10 object-cover rounded border shadow-sm"
-              />
-            </div>
-          )}
+        <div className={`text-gray-900 text-sm md:text-base break-words ${
+          isDelivered ? 'line-through' : ''
+        }`}>
+          {stop.address}
         </div>
-        <div className="text-xs text-blue-600 mt-1 text-center">Click any photo to enlarge</div>
       </div>
-    )}
 
-    {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
-    {clickedStop === index && (
-      <div className="mt-4">
-        {/* Show full-size images between Get Directions and the actual directions */}
-        {(stop.labelPhoto || stop.parcelPhoto) && (
-          <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-            <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {stop.labelPhoto && (
-                <div 
-                  className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-                  onClick={() => handlePhotoClick(stop)}
-                >
-                  <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
-                  <img 
-                    src={stop.labelPhoto} 
-                    alt="Shipping Label" 
-                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                  />
-                  <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
-                </div>
-              )}
-              {stop.parcelPhoto && (
-                <div 
-                  className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
-                  onClick={() => handlePhotoClick(stop)}
-                >
-                  <div className="text-xs text-gray-500 mb-1">Parcel View</div>
-                  <img 
-                    src={stop.parcelPhoto} 
-                    alt="Parcel" 
-                    className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
-                  />
-                  <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ✅ ADD SENDER INFO IN FOCUSED VIEW TOO */}
-        {stop.sender && (
-          <div className="mb-3 p-3 bg-blue-50 rounded-lg">
-            <div className="text-xs md:text-sm text-gray-600 mb-1 font-semibold">Sender Information</div>
-            <div className="text-sm text-blue-700">{stop.sender}</div>
-            {stop.weight && (
-              <div className="text-xs text-gray-600 mt-1">Weight: {stop.weight}</div>
+      {/* Photos section */}
+      {(stop.barcodePreview || stop.parcelPreview || stop.labelPreview) && (
+        <div className="mb-3">
+          <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+          <div className="flex space-x-2">
+            {stop.barcodePreview && (
+              <div 
+                className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                onClick={() => handlePhotoClick(stop)}
+              >
+                <div className="text-xs text-gray-500 mb-1">📊 Barcode</div>
+                <img 
+                  src={stop.barcodePreview} 
+                  alt="Barcode" 
+                  className="w-10 h-10 object-cover rounded border shadow-sm"
+                />
+              </div>
+            )}
+            {stop.parcelPreview && (
+              <div 
+                className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                onClick={() => handlePhotoClick(stop)}
+              >
+                <div className="text-xs text-gray-500 mb-1">📦 Parcel</div>
+                <img 
+                  src={stop.parcelPreview} 
+                  alt="Parcel" 
+                  className="w-10 h-10 object-cover rounded border shadow-sm"
+                />
+              </div>
+            )}
+            {stop.labelPreview && (
+              <div 
+                className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                onClick={() => handlePhotoClick(stop)}
+              >
+                <div className="text-xs text-gray-500 mb-1">📋 Label</div>
+                <img 
+                  src={stop.labelPreview} 
+                  alt="Label" 
+                  className="w-10 h-10 object-cover rounded border shadow-sm"
+                />
+              </div>
             )}
           </div>
-        )}
+          <div className="text-xs text-blue-600 mt-1 text-center">Click any photo to enlarge</div>
+        </div>
+      )}
 
-        {!userLocation && !isGettingLocation && (
-          <button
-            onClick={(e) => handleGoogleMapsClick(stop, e)}
-            className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
-          >
-            <span>🗺️</span>
-            <span>Get Directions</span>
-          </button>
-        )}
-
-        {isGettingLocation && (
-          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="flex items-center justify-center space-x-2">
-              <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
-              <span className="text-sm text-blue-700">Getting your location...</span>
+      {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
+      {clickedStop === index && (
+        <div className="mt-4">
+          {/* Show full-size images */}
+          {(stop.labelPhoto || stop.parcelPhoto) && (
+            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+              <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {stop.labelPhoto && (
+                  <div 
+                    className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                    onClick={() => handlePhotoClick(stop)}
+                  >
+                    <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+                    <img 
+                      src={stop.labelPhoto} 
+                      alt="Shipping Label" 
+                      className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                    />
+                    <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+                  </div>
+                )}
+                {stop.parcelPhoto && (
+                  <div 
+                    className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
+                    onClick={() => handlePhotoClick(stop)}
+                  >
+                    <div className="text-xs text-gray-500 mb-1">Parcel View</div>
+                    <img 
+                      src={stop.parcelPhoto} 
+                      alt="Parcel" 
+                      className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
+                    />
+                    <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {locationError && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-700 mb-2">{locationError}</p>
+          {/* Sender Info in Focused View */}
+          {stop.sender && (
+            <div className="mb-3 p-3 bg-blue-50 rounded-lg">
+              <div className="text-xs md:text-sm text-gray-600 mb-1 font-semibold">Sender Information</div>
+              <div className="text-sm text-blue-700">{stop.sender}</div>
+              {stop.weight && (
+                <div className="text-xs text-gray-600 mt-1">Weight: {stop.weight}</div>
+              )}
+            </div>
+          )}
+
+          {!userLocation && !isGettingLocation && (
             <button
               onClick={(e) => handleGoogleMapsClick(stop, e)}
-              className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
+              className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors w-full flex items-center justify-center space-x-2"
             >
-              🔄 Try Again
+              <span>🗺️</span>
+              <span>Get Directions</span>
             </button>
-          </div>
-        )}
+          )}
 
-        {userLocation && (
-          <button
-            onClick={(e) => openGoogleMapsDirections(stop)}
-            className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
-          >
-            <span>🗺️</span>
-            <span>Open Google Maps</span>
-          </button>
-        )}
-      </div>
-    )}
-  </div>
-))}
+          {isGettingLocation && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center justify-center space-x-2">
+                <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>
+                <span className="text-sm text-blue-700">Getting your location...</span>
+              </div>
+            </div>
+          )}
+
+          {locationError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-700 mb-2">{locationError}</p>
+              <button
+                onClick={(e) => handleGoogleMapsClick(stop, e)}
+                className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors w-full"
+              >
+                🔄 Try Again
+              </button>
+            </div>
+          )}
+
+          {userLocation && (
+            <button
+              onClick={(e) => openGoogleMapsDirections(stop)}
+              className="bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors w-full flex items-center justify-center space-x-2"
+            >
+              <span>🗺️</span>
+              <span>Open Google Maps</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+})}
       </div>
     </div>
 
