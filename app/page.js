@@ -342,6 +342,7 @@ const handleCloseModal = () => {
   // Load data from IndexedDB
 // Load data from IndexedDB
 // Load data from IndexedDB - FIXED
+// Load data from IndexedDB - UPDATED to include deliveryStatus
 useEffect(() => {
   if (!dbReady) return;
 
@@ -356,7 +357,11 @@ useEffect(() => {
           if (routeToLoad.photos) {
             setCapturedPhotos(routeToLoad.photos);
           }
-          setCurrentStep('complete'); // Force complete step for saved routes
+          // ✅ LOAD DELIVERY STATUS
+          if (routeToLoad.deliveryStatus) {
+            setDeliveryStatus(routeToLoad.deliveryStatus);
+          }
+          setCurrentStep('complete');
         }
       } else {
         // Load current photos
@@ -379,6 +384,10 @@ useEffect(() => {
           if (currentRoute.photos) {
             setCapturedPhotos(currentRoute.photos);
           }
+          // ✅ LOAD DELIVERY STATUS
+          if (currentRoute.deliveryStatus) {
+            setDeliveryStatus(currentRoute.deliveryStatus);
+          }
           setCurrentStep('complete');
         }
       }
@@ -388,7 +397,8 @@ useEffect(() => {
   };
 
   loadData();
-}, [dbReady, routeId]); // Remove optimizedRoute.length dependency
+}, [dbReady, routeId]);
+
 useEffect(() => {
   if (optimizedRoute.length > 0 && currentStep !== 'complete') {
     setCurrentStep('complete');
@@ -513,6 +523,7 @@ const loadRoute = async (routeId) => {
 };
 
 // Mark stop as delivered
+// Mark stop as delivered - FIXED to properly find and save route
 const markAsDelivered = async (stopIndex) => {
   const newStatus = {
     ...deliveryStatus,
@@ -521,25 +532,54 @@ const markAsDelivered = async (stopIndex) => {
   
   setDeliveryStatus(newStatus);
   
-  // ✅ Save to IndexedDB
+  // ✅ Save to IndexedDB - FIXED LOGIC
   if (dbReady && optimizedRoute.length > 0) {
     try {
-      const currentRoute = await seurDB.getRoute(routeId || Date.now());
+      console.log('🔄 Saving delivery status...');
+      
+      // Get ALL routes to find the current one
+      const allRoutes = await seurDB.getAllRoutes();
+      
+      // Find the current route - try multiple methods
+      let currentRoute = null;
+      
+      if (routeId) {
+        // If we have a route ID, use that
+        currentRoute = allRoutes.find(route => route.id === parseInt(routeId));
+      } else {
+        // If no route ID, find the most recent route with optimized data
+        currentRoute = allRoutes
+          .filter(route => route.optimizedRoute && route.optimizedRoute.length > 0)
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+      }
+      
+      console.log('🎯 Current route to update:', currentRoute);
+      
       if (currentRoute) {
-        await seurDB.saveRoute({
+        // Update the route with new delivery status
+        const updatedRoute = {
           ...currentRoute,
-          deliveryStatus: newStatus
-        });
+          deliveryStatus: newStatus,
+          updatedAt: new Date().toISOString()
+        };
+        
+        await seurDB.saveRoute(updatedRoute);
+        console.log('✅ Delivery status saved successfully!');
+        
+        // Update the saved routes list
+        const updatedRoutes = await seurDB.getAllRoutes();
+        setSavedRoutes(updatedRoutes);
+      } else {
+        console.log('❌ No current route found to update');
       }
     } catch (error) {
-      console.error('Error saving delivery status:', error);
+      console.error('❌ Error saving delivery status:', error);
     }
   }
   
   const stop = optimizedRoute[stopIndex];
   console.log(`✅ Marked as delivered: ${stop.clientName}`);
 };
-
 
 // Preserve state when we have optimized route but no route ID
 useEffect(() => {
