@@ -193,14 +193,33 @@ const [currentLabelPhoto, setCurrentLabelPhoto] = useState(null);
 // Image Modal Component
 // Image Modal Component - FIXED
 // Image Modal Component - HIGH QUALITY
+// In your ImageModal component, add handling for unmatched labels
 const ImageModal = ({ images, onClose }) => {
   if (!images) return null;
+
+  const hasLabelOnly = images.extractedData && !images.barcodePhoto && !images.parcelPhoto;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-95 z-[100000] flex items-center justify-center p-2">
       <div className="bg-white rounded-xl max-w-7xl w-full max-h-[98vh] overflow-hidden flex flex-col">
         <div className="p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
-          <h3 className="text-xl font-bold text-gray-900">High Quality Package Photos</h3>
+          <div>
+            <h3 className="text-xl font-bold text-gray-900">
+              {hasLabelOnly ? 'Shipping Label Details' : 'High Quality Package Photos'}
+            </h3>
+            {hasLabelOnly && (
+              <div className="text-sm text-yellow-600 mt-1">
+                ⚠️ No parcel photos available - Label only
+              </div>
+            )}
+            {/* ✅ ADD SENDER INFO IN MODAL */}
+            {images.extractedData?.sender && (
+              <div className="text-sm text-blue-600 mt-1">
+                From: {images.extractedData.sender}
+                {images.extractedData.weight && ` • Weight: ${images.extractedData.weight}`}
+              </div>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="text-gray-500 hover:text-gray-700 text-2xl bg-gray-100 hover:bg-gray-200 w-10 h-10 rounded-full flex items-center justify-center transition-colors"
@@ -211,22 +230,23 @@ const ImageModal = ({ images, onClose }) => {
         
         <div className="flex-1 overflow-auto p-4">
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            {/* Show barcode photo only if available */}
+            {images.barcodePhoto && (
+              <div className="text-center">
+                <div className="text-md font-semibold text-gray-700 mb-3">📊 Barcode</div>
+                <img 
+                  src={images.barcodePhoto} 
+                  alt="Barcode" 
+                  className="max-w-full max-h-[50vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
+                />
+              </div>
+            )}
+            
             {/* Label Photo */}
-              {/* Barcode Photo */}
-  <div className="text-center">
-    <div className="text-md font-semibold text-gray-700 mb-3">📊 Barcode</div>
-    {images.barcodePhoto ? (
-      <img 
-        src={images.barcodePhoto} 
-        alt="Barcode" 
-        className="max-w-full max-h-[50vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
-      />
-    ) : (
-      <div className="text-red-500 py-4">❌ Barcode image not available</div>
-    )}
-  </div>
             <div className="text-center">
-              <div className="text-lg font-semibold text-gray-700 mb-4">📋 Shipping Label - FULL QUALITY</div>
+              <div className="text-lg font-semibold text-gray-700 mb-4">
+                {hasLabelOnly ? '📋 Shipping Label - NO PARCEL MATCH' : '📋 Shipping Label - FULL QUALITY'}
+              </div>
               <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
                 {images.labelPhoto ? (
                   <img 
@@ -243,25 +263,40 @@ const ImageModal = ({ images, onClose }) => {
               </div>
             </div>
             
-            {/* Parcel Photo */}
-            <div className="text-center">
-              <div className="text-lg font-semibold text-gray-700 mb-4">📦 Parcel View - FULL QUALITY</div>
-              <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
-                {images.parcelPhoto ? (
+            {/* Parcel Photo - Only show if available */}
+            {images.parcelPhoto && (
+              <div className="text-center">
+                <div className="text-lg font-semibold text-gray-700 mb-4">📦 Parcel View - FULL QUALITY</div>
+                <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
                   <img 
                     src={images.parcelPhoto} 
                     alt="Parcel" 
                     className="max-w-full max-h-[70vh] w-auto h-auto mx-auto rounded-lg shadow-lg"
                     style={{ imageRendering: 'high-quality' }}
                   />
-                ) : (
-                  <div className="text-red-500 text-lg py-8">
-                    ❌ Full quality parcel image not available
-                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Show extracted data for unmatched labels */}
+          {hasLabelOnly && images.extractedData && (
+            <div className="mt-6 p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+              <h4 className="font-semibold text-yellow-800 mb-2">Extracted Label Data:</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div><strong>Client:</strong> {images.extractedData.clientName || 'N/A'}</div>
+                <div><strong>Address:</strong> {images.extractedData.address || 'N/A'}</div>
+                <div><strong>Phone:</strong> {images.extractedData.phoneNumber || 'N/A'}</div>
+                <div><strong>Barcode:</strong> {images.extractedData.barcode || 'N/A'}</div>
+                {images.extractedData.sender && (
+                  <div><strong>Sender:</strong> {images.extractedData.sender}</div>
+                )}
+                {images.extractedData.weight && (
+                  <div><strong>Weight:</strong> {images.extractedData.weight}</div>
                 )}
               </div>
             </div>
-          </div>
+          )}
         </div>
         
         <div className="p-4 border-t border-gray-200 text-center shrink-0">
@@ -1322,6 +1357,7 @@ const getStepStatus = (step) => {
 // Match parcels with labels using barcode
 // Match parcels with labels using MULTIPLE barcodes
 // Match parcels with labels using MULTIPLE barcodes - FIXED IMAGE PROPAGATION
+// Enhanced match function that includes unmatched labels
 const matchParcelsWithLabels = async () => {
   setProcessing(true);
   
@@ -1366,17 +1402,17 @@ const matchParcelsWithLabels = async () => {
         source: 'unmatched'
       }),
       // ✅ PRESERVE PARCEL IMAGES
-      barcodePhoto: parcelSet.barcode?.data, // Full quality barcode image
-      barcodePreview: parcelSet.barcode?.preview, // Preview barcode image
-      parcelPhoto: parcelSet.parcel?.data, // Full quality parcel image  
-      parcelPreview: parcelSet.parcel?.preview, // Preview parcel image
+      barcodePhoto: parcelSet.barcode?.data,
+      barcodePreview: parcelSet.barcode?.preview,
+      parcelPhoto: parcelSet.parcel?.data,
+      parcelPreview: parcelSet.parcel?.preview,
       
       // ✅ PRESERVE LABEL IMAGES
-      labelPhoto: matchingLabel?.data, // Full quality label image
-      labelPreview: matchingLabel?.preview, // Preview label image
+      labelPhoto: matchingLabel?.data,
+      labelPreview: matchingLabel?.preview,
       
       // ✅ PRESERVE ORIGINAL DATA
-      originalPhotos: parcelSet, // Keep original photo set
+      originalPhotos: parcelSet,
       extractedData: matchingLabel?.extractedData,
       photoSetId: parcelSet.id,
       barcodeNumber: matchedBarcode || parcelBarcodes[0],
@@ -1387,22 +1423,53 @@ const matchParcelsWithLabels = async () => {
     };
   });
 
+  // ✅ ADD UNMATCHED LABELS AS SEPARATE DELIVERIES
+  const unmatchedLabels = labelPhotos.filter(label => {
+    // Check if this label was used in any match
+    return !matchedDeliveries.some(delivery => 
+      delivery.extractedData?.barcode === label.extractedData?.barcode
+    );
+  });
+
+  // Create deliveries for unmatched labels
+  const unmatchedLabelDeliveries = unmatchedLabels.map(label => ({
+    ...(label.extractedData || {
+      clientName: 'Unknown Client',
+      address: 'Address from label',
+      source: 'label-only'
+    }),
+    // Label data only (no parcel photos)
+    labelPhoto: label.data,
+    labelPreview: label.preview,
+    extractedData: label.extractedData,
+    photoSetId: `label-${label.id}`,
+    barcodeNumber: label.extractedData?.barcode,
+    source: 'label-only',
+    matchStatus: 'unmatched',
+    hasNoParcel: true,
+    labelOnly: true
+  }));
+
+  // Combine matched deliveries with unmatched labels
+  const allDeliveries = [...matchedDeliveries, ...unmatchedLabelDeliveries];
+
   const matchedCount = matchedDeliveries.filter(d => d.source === 'matched').length;
-  console.log(`📊 Matching Results: ${matchedCount}/${capturedPhotos.length} parcels matched with labels`);
+  const unmatchedCount = unmatchedLabelDeliveries.length;
+  
+  console.log(`📊 Matching Results: ${matchedCount}/${capturedPhotos.length} parcels matched, ${unmatchedCount} unmatched labels`);
   
   // Debug: Check if images are preserved
-  console.log('🖼️ Image Preservation Check:', matchedDeliveries.map(d => ({
+  console.log('🖼️ Image Preservation Check:', allDeliveries.map(d => ({
     client: d.clientName,
+    source: d.source,
     hasBarcodePhoto: !!d.barcodePhoto,
     hasParcelPhoto: !!d.parcelPhoto, 
     hasLabelPhoto: !!d.labelPhoto,
-    barcodeLength: d.barcodePhoto?.length,
-    parcelLength: d.parcelPhoto?.length,
-    labelLength: d.labelPhoto?.length
+    matchStatus: d.matchStatus
   })));
   
-  setDeliveries(matchedDeliveries);
-  await geocodeAddresses(matchedDeliveries);
+  setDeliveries(allDeliveries);
+  await geocodeAddresses(allDeliveries);
   setProcessing(false);
 };
 
@@ -2052,6 +2119,8 @@ const removeLabel = (labelId) => {
       <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
        {optimizedRoute.map((stop, index) => {
   const isDelivered = deliveryStatus[index] === 'delivered';
+  const isUnmatched = stop.matchStatus === 'unmatched' && stop.labelOnly;
+  const hasNoParcel = stop.hasNoParcel;
   
   return (
     <div 
@@ -2060,26 +2129,43 @@ const removeLabel = (labelId) => {
         clickedStop === index 
           ? 'border-2 border-black bg-gray-50' 
           : 'border-0'
-      } ${isDelivered ? 'bg-green-50 opacity-75' : ''}`}
+      } ${isDelivered ? 'bg-green-50 opacity-75' : ''} ${
+        isUnmatched ? 'bg-yellow-50 border-l-4 border-l-yellow-400' : ''
+      }`}
     >
       {/* Delivery Status Header */}
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center">
           <div className={`w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3 ${
-            isDelivered ? 'bg-green-500 text-white' : 'bg-black text-white'
+            isDelivered ? 'bg-green-500 text-white' : 
+            isUnmatched ? 'bg-yellow-500 text-white' : 
+            'bg-black text-white'
           }`}>
-            {isDelivered ? '✓' : stop.stopNumber}
+            {isDelivered ? '✓' : 
+             isUnmatched ? '❓' : 
+             stop.stopNumber}
           </div>
           <div className="min-w-0 flex-1">
             <div className={`font-semibold text-base md:text-lg truncate ${
-              isDelivered ? 'text-green-700 line-through' : 'text-gray-900'
+              isDelivered ? 'text-green-700 line-through' : 
+              isUnmatched ? 'text-yellow-700' : 
+              'text-gray-900'
             }`}>
               {stop.clientName}
+              {isUnmatched && (
+                <span className="text-xs text-yellow-600 ml-2">(No Parcel Match)</span>
+              )}
             </div>
             <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
             {stop.sender && (
               <div className="text-xs text-blue-600 truncate mt-1">
                 From: {stop.sender}
+              </div>
+            )}
+            {/* Show barcode info for unmatched labels */}
+            {isUnmatched && stop.barcodeNumber && (
+              <div className="text-xs text-gray-500 mt-1">
+                Label Barcode: {stop.barcodeNumber}
               </div>
             )}
           </div>
@@ -2090,17 +2176,21 @@ const removeLabel = (labelId) => {
           </div>
           <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
           
-          {/* Delivery Status Button */}
-          {!isDelivered ? (
+          {/* Delivery Status Button - Only show for matched stops */}
+          {!isDelivered && !isUnmatched ? (
             <button
               onClick={() => markAsDelivered(index)}
               className="mt-2 bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
             >
               Mark Delivered
             </button>
-          ) : (
+          ) : isDelivered ? (
             <div className="mt-2 text-green-600 font-semibold text-sm whitespace-nowrap">
               ✅ Delivered
+            </div>
+          ) : (
+            <div className="mt-2 text-yellow-600 font-semibold text-sm whitespace-nowrap">
+              ⚠️ No Parcel
             </div>
           )}
         </div>
@@ -2115,10 +2205,12 @@ const removeLabel = (labelId) => {
         </div>
       </div>
 
-      {/* Photos section */}
+      {/* Photos section - Show label photo even for unmatched stops */}
       {(stop.barcodePreview || stop.parcelPreview || stop.labelPreview) && (
         <div className="mb-3">
-          <div className="text-xs md:text-sm text-gray-600 mb-2">Package Photos</div>
+          <div className="text-xs md:text-sm text-gray-600 mb-2">
+            {isUnmatched ? 'Label Photo (No Parcel Match)' : 'Package Photos'}
+          </div>
           <div className="flex space-x-2">
             {stop.barcodePreview && (
               <div 
@@ -2151,7 +2243,9 @@ const removeLabel = (labelId) => {
                 className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
                 onClick={() => handlePhotoClick(stop)}
               >
-                <div className="text-xs text-gray-500 mb-1">📋 Label</div>
+                <div className="text-xs text-gray-500 mb-1">
+                  {isUnmatched ? '📋 Label Only' : '📋 Label'}
+                </div>
                 <img 
                   src={stop.labelPreview} 
                   alt="Label" 
@@ -2164,20 +2258,46 @@ const removeLabel = (labelId) => {
         </div>
       )}
 
-      {/* Google Maps Button - ONLY SHOWS WHEN STOP IS CLICKED/FOCUSED */}
+      {/* Show message for unmatched labels without photos */}
+      {isUnmatched && !stop.labelPreview && (
+        <div className="mb-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+          <div className="text-xs text-yellow-700">
+            ⚠️ This label didn't match any parcel barcode. Only address data is available.
+          </div>
+          {stop.extractedData && (
+            <div className="text-xs text-gray-600 mt-2">
+              <div><strong>Extracted from label:</strong></div>
+              <div>Client: {stop.extractedData.clientName}</div>
+              <div>Address: {stop.extractedData.address}</div>
+              {stop.extractedData.phoneNumber && (
+                <div>Phone: {stop.extractedData.phoneNumber}</div>
+              )}
+              {stop.extractedData.barcode && (
+                <div>Barcode: {stop.extractedData.barcode}</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Google Maps Button - Show for all stops */}
       {clickedStop === index && (
         <div className="mt-4">
           {/* Show full-size images */}
           {(stop.labelPhoto || stop.parcelPhoto) && (
             <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-              <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">Package Images</div>
+              <div className="text-xs md:text-sm text-gray-600 mb-2 font-semibold">
+                {isUnmatched ? 'Label Image' : 'Package Images'}
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {stop.labelPhoto && (
                   <div 
                     className="text-center cursor-pointer transform hover:scale-105 transition-transform duration-200"
                     onClick={() => handlePhotoClick(stop)}
                   >
-                    <div className="text-xs text-gray-500 mb-1">Shipping Label</div>
+                    <div className="text-xs text-gray-500 mb-1">
+                      {isUnmatched ? 'Shipping Label (No Parcel)' : 'Shipping Label'}
+                    </div>
                     <img 
                       src={stop.labelPhoto} 
                       alt="Shipping Label" 
@@ -2215,6 +2335,18 @@ const removeLabel = (labelId) => {
             </div>
           )}
 
+          {/* Show unmatched warning in focused view */}
+          {isUnmatched && (
+            <div className="mb-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+              <div className="text-sm text-yellow-700 font-semibold">⚠️ No Parcel Match</div>
+              <div className="text-xs text-yellow-600 mt-1">
+                This shipping label didn't match any captured parcel barcode.
+                {stop.barcodeNumber && ` Label barcode: ${stop.barcodeNumber}`}
+              </div>
+            </div>
+          )}
+
+          {/* Google Maps Directions Buttons */}
           {!userLocation && !isGettingLocation && (
             <button
               onClick={(e) => handleGoogleMapsClick(stop, e)}
