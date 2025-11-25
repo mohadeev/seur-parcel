@@ -1,226 +1,231 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 
+// Google Maps component
 const RouteMap = ({ stops, onFocusChange }) => {
   const mapRef = useRef(null);
-  const [focusedSegment, setFocusedSegment] = useState(null);
-  const [mapInstance, setMapInstance] = useState(null);
-  const [routeLine, setRouteLine] = useState(null);
+  const [map, setMap] = useState(null);
+  const [directionsService, setDirectionsService] = useState(null);
+  const [directionsRenderer, setDirectionsRenderer] = useState(null);
   const [markers, setMarkers] = useState([]);
+  const [focusedSegment, setFocusedSegment] = useState(null);
 
+  // Initialize Google Maps
   useEffect(() => {
-    if (typeof window === 'undefined' || !stops || stops.length === 0) return;
+    if (typeof window === 'undefined' || !window.google || !stops || stops.length === 0) return;
 
-    const initMap = async () => {
-      const L = await import('leaflet');
-      await import('leaflet/dist/leaflet.css');
-
-      // Fix for default markers in Next.js
-      delete L.Icon.Default.prototype._getIconUrl;
-      L.Icon.Default.mergeOptions({
-        iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-      });
-
-      // Create map
-      const map = L.map('map', {
-        zoomControl: false,
-        attributionControl: false
-      }).setView([stops[0].lat, stops[0].lng], 13);
+    const initMap = () => {
+      const google = window.google;
       
-      mapRef.current = map;
-      setMapInstance(map);
-
-      // Add light tile layer
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 20
-      }).addTo(map);
-
-      // Add zoom control to bottom right
-      L.control.zoom({
-        position: 'bottomright'
-      }).addTo(map);
-
-      // Create route line coordinates
-      const routeCoordinates = stops.map(stop => [stop.lat, stop.lng]);
-
-      // Draw main route line
-      const mainRouteLine = L.polyline(routeCoordinates, {
-        color: '#10B981',
-        weight: 5,
-        opacity: 0.8,
-        lineJoin: 'round'
-      }).addTo(map);
-      setRouteLine(mainRouteLine);
-
-      // Add markers for each stop - NO SHADOWS
-      const markersArray = stops.map((stop, index) => {
-        let backgroundColor = '#000000';
-        let textColor = '#FFFFFF';
-        let iconHtml = stop.stopNumber;
-        
-        if (stop.type === 'depot') {
-          backgroundColor = '#EF4444';
-          textColor = '#FFFFFF';
-          iconHtml = '🏁';
-        }
-
-        const customIcon = L.divIcon({
-          html: `
-            <div style="
-              background-color: ${backgroundColor};
-              color: ${textColor};
-              width: 36px;
-              height: 36px;
-              border-radius: 50%;
-              border: 3px solid #FFFFFF;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              font-weight: bold;
-              font-size: 14px;
-            ">
-              ${iconHtml}
-            </div>
-          `,
-          className: 'custom-marker',
-          iconSize: [36, 36],
-          iconAnchor: [18, 18]
-        });
-
-        const marker = L.marker([stop.lat, stop.lng], { icon: customIcon }).addTo(map);
-        
-        // Popup with stop info
-        let popupContent = '';
-        if (stop.type === 'depot') {
-          popupContent = `
-            <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; max-width: 250px; border: 1px solid #E5E7EB;">
-              <strong style="color: #EF4444;">🏁 ${stop.name}</strong><br/>
-              <small style="color: #6B7280;">${stop.address}</small>
-            </div>
-          `;
-        } else {
-          popupContent = `
-            <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; max-width: 250px; border: 1px solid #E5E7EB;">
-              <strong style="color: #10B981;">🛑 Stop ${stop.stopNumber}: ${stop.clientName}</strong><br/>
-              <div style="color: #6B7280; margin-top: 4px;">
-                📞 ${stop.phoneNumber}<br/>
-                📍 ${stop.address}<br/>
-                ${stop.distanceFromPrevious ? `<div style="margin-top: 4px; color: #3B82F6;">📏 ${stop.distanceFromPrevious} from previous</div>` : ''}
-              </div>
-            </div>
-          `;
-        }
-        
-        marker.bindPopup(popupContent);
-        return marker;
+      // Create map
+      const mapInstance = new google.maps.Map(mapRef.current, {
+        zoom: 12,
+        center: { lat: stops[0].lat, lng: stops[0].lng },
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: true,
+        zoomControl: true,
+        zoomControlOptions: {
+          position: google.maps.ControlPosition.RIGHT_BOTTOM,
+        },
+        styles: [
+          {
+            featureType: "poi",
+            elementType: "labels",
+            stylers: [{ visibility: "on" }]
+          }
+        ]
       });
 
-      setMarkers(markersArray);
-
-      // Fit map to show all markers
-      map.fitBounds(mainRouteLine.getBounds(), { padding: [20, 20] });
-
-      // Add click event to map to reset focus
-      map.on('click', () => {
-        resetFocus();
+      // Initialize directions service and renderer
+      const directionsServiceInstance = new google.maps.DirectionsService();
+      const directionsRendererInstance = new google.maps.DirectionsRenderer({
+        map: mapInstance,
+        suppressMarkers: true,
+        polylineOptions: {
+          strokeColor: '#10B981',
+          strokeWeight: 5,
+          strokeOpacity: 0.8
+        }
       });
+
+      setMap(mapInstance);
+      setDirectionsService(directionsServiceInstance);
+      setDirectionsRenderer(directionsRendererInstance);
+
+      // Draw the route
+      drawRoute(mapInstance, directionsServiceInstance, directionsRendererInstance, stops);
+
+      // Add custom markers
+      addCustomMarkers(mapInstance, stops);
 
       // Cleanup function
       return () => {
-        map.remove();
+        if (directionsRendererInstance) {
+          directionsRendererInstance.setMap(null);
+        }
+        markers.forEach(marker => marker.setMap(null));
       };
     };
 
     initMap();
   }, [stops]);
 
-  // Function to focus on a specific segment
-  const focusOnSegment = (segmentIndex) => {
-    if (!mapInstance || !routeLine || stops.length < 2) return;
+  // Draw route using Google Directions API
+  const drawRoute = (mapInstance, directionsService, directionsRenderer, stops) => {
+    if (stops.length < 2) return;
 
-    // Hide all markers and route line
-    markers.forEach(marker => marker.remove());
-    routeLine.remove();
+    const waypoints = stops.slice(1, -1).map(stop => ({
+      location: { lat: stop.lat, lng: stop.lng },
+      stopover: true
+    }));
 
-    // Show only the focused segment (from previous stop to current stop)
-    const startIndex = segmentIndex === 0 ? 0 : segmentIndex;
-    const endIndex = segmentIndex + 1;
-    
-    const segmentCoordinates = [
-      stops[startIndex],
-      stops[endIndex]
-    ].map(stop => [stop.lat, stop.lng]);
+    const request = {
+      origin: { lat: stops[0].lat, lng: stops[0].lng },
+      destination: { lat: stops[stops.length - 1].lat, lng: stops[stops.length - 1].lng },
+      waypoints: waypoints,
+      travelMode: google.maps.TravelMode.DRIVING,
+      optimizeWaypoints: true
+    };
 
-    // Draw focused segment with different style
-    const focusedLine = L.polyline(segmentCoordinates, {
-      color: '#EF4444',
-      weight: 6,
-      opacity: 0.9,
-      lineJoin: 'round'
-    }).addTo(mapInstance);
+    directionsService.route(request, (result, status) => {
+      if (status === google.maps.DirectionsStatus.OK) {
+        directionsRenderer.setDirections(result);
+        
+        // Fit map to show entire route
+        const bounds = new google.maps.LatLngBounds();
+        result.routes[0].legs.forEach(leg => {
+          bounds.extend(leg.start_location);
+          bounds.extend(leg.end_location);
+        });
+        mapInstance.fitBounds(bounds, { padding: 50 });
+      } else {
+        console.error('Error drawing route:', status);
+        // Fallback: just show markers without route
+        const bounds = new google.maps.LatLngBounds();
+        stops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
+        mapInstance.fitBounds(bounds, { padding: 50 });
+      }
+    });
+  };
 
-    // Show only the two relevant markers - NO SHADOWS
-    [startIndex, endIndex].forEach(index => {
-      const stop = stops[index];
-      let backgroundColor = index === 0 && stop.type === 'depot' ? '#EF4444' : '#000000';
+  // Add custom markers
+  const addCustomMarkers = (mapInstance, stops) => {
+    const google = window.google;
+    const newMarkers = [];
+
+    stops.forEach((stop, index) => {
+      let backgroundColor = '#000000';
       let textColor = '#FFFFFF';
-      let iconHtml = index === endIndex ? segmentIndex + 1 : (index === 0 ? '🏁' : index);
+      let labelText = stop.stopNumber?.toString() || (index + 1).toString();
+      
+      if (stop.type === 'depot') {
+        backgroundColor = '#EF4444';
+        labelText = '🏁';
+      }
 
-      const customIcon = L.divIcon({
-        html: `
-          <div style="
-            background-color: ${backgroundColor};
-            color: ${textColor};
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            border: 3px solid #FFFFFF;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 16px;
-          ">
-            ${iconHtml}
-          </div>
-        `,
-        className: 'custom-marker',
-        iconSize: [42, 42],
-        iconAnchor: [21, 21]
+      const marker = new google.maps.Marker({
+        position: { lat: stop.lat, lng: stop.lng },
+        map: mapInstance,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          fillColor: backgroundColor,
+          fillOpacity: 1,
+          strokeColor: '#FFFFFF',
+          strokeWeight: 2,
+          scale: 15
+        },
+        label: {
+          text: labelText,
+          color: textColor,
+          fontSize: '12px',
+          fontWeight: 'bold'
+        },
+        title: stop.type === 'depot' ? stop.name : `${stop.clientName} - ${stop.address}`
       });
 
-      const marker = L.marker([stop.lat, stop.lng], { icon: customIcon }).addTo(mapInstance);
-      
-      let popupContent = '';
-      if (stop.type === 'depot') {
-        popupContent = `
-          <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; border: 1px solid #E5E7EB;">
-            <strong style="color: #EF4444;">🏁 ${stop.name}</strong><br/>
-            <small style="color: #6B7280;">${stop.address}</small>
-          </div>
-        `;
-      } else {
-        popupContent = `
-          <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; border: 1px solid #E5E7EB;">
-            <strong style="color: #10B981;">🛑 Stop ${stop.stopNumber}: ${stop.clientName}</strong><br/>
-            <div style="color: #6B7280; margin-top: 4px;">
-              📞 ${stop.phoneNumber}<br/>
-              📍 ${stop.address}<br/>
-              ${stop.distanceFromPrevious ? `<div style="margin-top: 4px; color: #3B82F6;">📏 ${stop.distanceFromPrevious} from previous</div>` : ''}
-            </div>
-          </div>
-        `;
-      }
-      
-      marker.bindPopup(popupContent);
+      // Add click listener
+      marker.addListener('click', () => {
+        const infoWindow = new google.maps.InfoWindow({
+          content: createInfoWindowContent(stop)
+        });
+        infoWindow.open(mapInstance, marker);
+      });
+
+      newMarkers.push(marker);
     });
 
-    // Fit map to show only the focused segment
-    const segmentBounds = L.latLngBounds(segmentCoordinates);
-    mapInstance.fitBounds(segmentBounds, { padding: [50, 50] });
+    setMarkers(newMarkers);
+  };
+
+  // Create info window content
+  const createInfoWindowContent = (stop) => {
+    if (stop.type === 'depot') {
+      return `
+        <div style="padding: 12px; max-width: 250px;">
+          <strong style="color: #EF4444;">🏁 ${stop.name}</strong><br/>
+          <small style="color: #6B7280;">${stop.address}</small>
+        </div>
+      `;
+    } else {
+      return `
+        <div style="padding: 12px; max-width: 250px;">
+          <strong style="color: #10B981;">🛑 Stop ${stop.stopNumber}: ${stop.clientName}</strong><br/>
+          <div style="color: #6B7280; margin-top: 4px;">
+            📞 ${stop.phoneNumber || 'N/A'}<br/>
+            📍 ${stop.address}<br/>
+            ${stop.distanceFromPrevious ? `<div style="margin-top: 4px; color: #3B82F6;">📏 ${stop.distanceFromPrevious} from previous</div>` : ''}
+          </div>
+        </div>
+      `;
+    }
+  };
+
+  // Focus on segment function
+  const focusOnSegment = (segmentIndex) => {
+    if (!map || !stops || stops.length < 2 || segmentIndex >= stops.length - 1) return;
+
+    const startStop = stops[segmentIndex];
+    const endStop = stops[segmentIndex + 1];
+
+    // Clear existing route and markers
+    if (directionsRenderer) {
+      directionsRenderer.setMap(null);
+    }
+    markers.forEach(marker => marker.setMap(null));
+
+    // Create new directions renderer for focused segment
+    const google = window.google;
+    const focusedDirectionsRenderer = new google.maps.DirectionsRenderer({
+      map: map,
+      suppressMarkers: false,
+      polylineOptions: {
+        strokeColor: '#EF4444',
+        strokeWeight: 6,
+        strokeOpacity: 0.9
+      }
+    });
+
+    // Request directions for focused segment
+    if (directionsService) {
+      const request = {
+        origin: { lat: startStop.lat, lng: startStop.lng },
+        destination: { lat: endStop.lat, lng: endStop.lng },
+        travelMode: google.maps.TravelMode.DRIVING
+      };
+
+      directionsService.route(request, (result, status) => {
+        if (status === google.maps.DirectionsStatus.OK) {
+          focusedDirectionsRenderer.setDirections(result);
+          
+          // Fit map to show the segment
+          const bounds = new google.maps.LatLngBounds();
+          bounds.extend({ lat: startStop.lat, lng: startStop.lng });
+          bounds.extend({ lat: endStop.lat, lng: endStop.lng });
+          map.fitBounds(bounds, { padding: 50 });
+        }
+      });
+    }
 
     setFocusedSegment(segmentIndex);
     if (onFocusChange) {
@@ -228,92 +233,31 @@ const RouteMap = ({ stops, onFocusChange }) => {
     }
   };
 
-  // Function to reset focus and show everything
+  // Reset focus function
   const resetFocus = () => {
-    if (!mapInstance || !stops || stops.length === 0) return;
+    if (!map || !stops || stops.length === 0) return;
 
-    // Clear existing map elements
-    mapInstance.eachLayer((layer) => {
-      if (layer instanceof L.Polyline || layer instanceof L.Marker) {
-        mapInstance.removeLayer(layer);
-      }
-    });
-
-    // Recreate the full route
-    const routeCoordinates = stops.map(stop => [stop.lat, stop.lng]);
+    // Reinitialize the full route
+    markers.forEach(marker => marker.setMap(null));
     
-    // Redraw main route line
-    const mainRouteLine = L.polyline(routeCoordinates, {
-      color: '#10B981',
-      weight: 5,
-      opacity: 0.8,
-      lineJoin: 'round'
-    }).addTo(mapInstance);
+    if (directionsRenderer) {
+      directionsRenderer.setMap(null);
+    }
 
-    // Redraw all markers - NO SHADOWS
-    const markersArray = stops.map((stop, index) => {
-      let backgroundColor = '#000000';
-      let textColor = '#FFFFFF';
-      let iconHtml = stop.stopNumber;
-      
-      if (stop.type === 'depot') {
-        backgroundColor = '#EF4444';
-        textColor = '#FFFFFF';
-        iconHtml = '🏁';
+    // Recreate everything
+    const google = window.google;
+    const newDirectionsRenderer = new google.maps.DirectionsRenderer({
+      map: map,
+      suppressMarkers: true,
+      polylineOptions: {
+        strokeColor: '#10B981',
+        strokeWeight: 5,
+        strokeOpacity: 0.8
       }
-
-      const customIcon = L.divIcon({
-        html: `
-          <div style="
-            background-color: ${backgroundColor};
-            color: ${textColor};
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            border: 3px solid #FFFFFF;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 14px;
-          ">
-            ${iconHtml}
-          </div>
-        `,
-        className: 'custom-marker',
-        iconSize: [36, 36],
-        iconAnchor: [18, 18]
-      });
-
-      const marker = L.marker([stop.lat, stop.lng], { icon: customIcon }).addTo(mapInstance);
-      
-      let popupContent = '';
-      if (stop.type === 'depot') {
-        popupContent = `
-          <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; border: 1px solid #E5E7EB;">
-            <strong style="color: #EF4444;">🏁 ${stop.name}</strong><br/>
-            <small style="color: #6B7280;">${stop.address}</small>
-          </div>
-        `;
-      } else {
-        popupContent = `
-          <div style="padding: 12px; background: white; color: #1F2937; border-radius: 8px; border: 1px solid #E5E7EB;">
-            <strong style="color: #10B981;">🛑 Stop ${stop.stopNumber}: ${stop.clientName}</strong><br/>
-            <div style="color: #6B7280; margin-top: 4px;">
-              📞 ${stop.phoneNumber}<br/>
-              📍 ${stop.address}<br/>
-              ${stop.distanceFromPrevious ? `<div style="margin-top: 4px; color: #3B82F6;">📏 ${stop.distanceFromPrevious} from previous</div>` : ''}
-            </div>
-          </div>
-        `;
-      }
-      
-      marker.bindPopup(popupContent);
-      return marker;
     });
 
-    // Fit map to show all markers
-    mapInstance.fitBounds(mainRouteLine.getBounds(), { padding: [20, 20] });
+    drawRoute(map, directionsService, newDirectionsRenderer, stops);
+    addCustomMarkers(map, stops);
 
     setFocusedSegment(null);
     if (onFocusChange) {
@@ -323,13 +267,63 @@ const RouteMap = ({ stops, onFocusChange }) => {
 
   // Expose functions to parent
   useEffect(() => {
-    if (mapInstance) {
+    if (map) {
       window.focusOnSegment = focusOnSegment;
       window.resetMapFocus = resetFocus;
     }
-  }, [mapInstance, stops]);
+  }, [map, stops, directionsService]);
 
-  return <div id="map" style={{ height: '100%', width: '100%', cursor: 'pointer' }} />;
+  return (
+    <div 
+      ref={mapRef} 
+      style={{ 
+        height: '100%', 
+        width: '100%', 
+        cursor: 'pointer',
+        borderRadius: '8px'
+      }} 
+    />
+  );
 };
 
-export default RouteMap;
+// Load Google Maps script
+const GoogleMapsWrapper = (props) => {
+  const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
+
+  useEffect(() => {
+    // Check if Google Maps is already loaded
+    if (window.google) {
+      setGoogleMapsLoaded(true);
+      return;
+    }
+
+    // Load Google Maps script
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=geometry,places`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => setGoogleMapsLoaded(true);
+    script.onerror = () => console.error('Error loading Google Maps');
+    
+    document.head.appendChild(script);
+
+    return () => {
+      document.head.removeChild(script);
+    };
+  }, []);
+
+  if (!googleMapsLoaded) {
+    return (
+      <div className="h-full w-full flex items-center justify-center bg-gray-100 rounded-lg">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+          <p className="text-gray-600">Loading Google Maps...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return <RouteMap {...props} />;
+};
+
+export default GoogleMapsWrapper;

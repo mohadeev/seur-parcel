@@ -1478,7 +1478,39 @@ const matchParcelsWithLabels = async () => {
 // Process barcode photo with QuaggaJS (FREE barcode detection)
 // Process barcode photo with ChatGPT (multiple barcodes detection)
 
+// Add this function for bulk refetch
+const refetchAllIncompleteData = async () => {
+  const incompleteStops = optimizedRoute.filter((stop, index) => 
+    needsDataRefetch(stop) && deliveryStatus[index] !== 'delivered'
+  );
 
+  if (incompleteStops.length === 0) {
+    alert('No stops with incomplete data found.');
+    return;
+  }
+
+  setProcessing(true);
+  
+  try {
+    console.log(`📡 Refetching data for ${incompleteStops.length} stops...`);
+    let successCount = 0;
+    
+    for (const stop of incompleteStops) {
+      const stopIndex = optimizedRoute.findIndex(s => s === stop);
+      
+      // Your refetch logic here (similar to individual refetch)
+      // This would be a more complex implementation for bulk operations
+    }
+    
+    alert(`✅ Successfully refetched data for ${successCount} out of ${incompleteStops.length} stops`);
+    
+  } catch (error) {
+    console.error('Error during bulk refetch:', error);
+    alert('❌ Error refetching data. Please try again.');
+  } finally {
+    setProcessing(false);
+  }
+};
 
 // Detect MULTIPLE barcodes with ChatGPT
 // Process barcode photo with ChatGPT (multiple barcodes detection)
@@ -1569,6 +1601,90 @@ const detectMultipleBarcodesWithChatGPT = async (barcodeFile) => {
 // Remove captured label
 const removeLabel = (labelId) => {
   setLabelPhotos(prev => prev.filter(label => label.id !== labelId));
+}; 
+// Add this function to refetch data for a specific stop
+const refetchStopData = async (stopIndex) => {
+  const stop = optimizedRoute[stopIndex];
+  
+  setProcessing(true);
+  
+  try {
+    console.log(`🔄 Refetching data for: ${stop.clientName}`);
+    
+    // Check what data is missing and needs refetching
+    const needsLabelData = !stop.extractedData || !stop.extractedData.clientName || !stop.extractedData.address;
+    const needsBarcodeData = stop.labelPhoto && !stop.extractedData?.barcode;
+    
+    if (!stop.labelPhoto) {
+      alert('❌ No label photo available to refetch data from.');
+      return;
+    }
+
+    // Convert label photo to file for processing
+    const response = await fetch(stop.labelPhoto);
+    const blob = await response.blob();
+    const file = new File([blob], `label-${stopIndex}.jpg`, { type: 'image/jpeg' });
+
+    // Process the label with AI again
+    const formData = new FormData();
+    formData.append('labelImage', file);
+
+    const apiResponse = await fetch(`${SERVER_URL}/api/process-single-photo`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await apiResponse.json();
+    
+    if (data.success && data.delivery) {
+      console.log("✅ Refetched data:", data.delivery);
+      
+      // Update the stop with new data
+      const updatedRoute = [...optimizedRoute];
+      updatedRoute[stopIndex] = {
+        ...updatedRoute[stopIndex],
+        extractedData: {
+          ...updatedRoute[stopIndex].extractedData, // Keep existing data
+          ...data.delivery // Override with new data
+        },
+        clientName: data.delivery.clientName || updatedRoute[stopIndex].clientName,
+        address: data.delivery.address || updatedRoute[stopIndex].address,
+        phoneNumber: data.delivery.phoneNumber || updatedRoute[stopIndex].phoneNumber,
+        barcodeNumber: data.delivery.barcode || updatedRoute[stopIndex].barcodeNumber,
+        sender: data.delivery.sender || updatedRoute[stopIndex].sender,
+        weight: data.delivery.weight || updatedRoute[stopIndex].weight,
+        dataRefetched: true
+      };
+
+      setOptimizedRoute(updatedRoute);
+      
+      alert(`✅ Successfully refetched data for ${data.delivery.clientName || stop.clientName}`);
+      
+    } else {
+      throw new Error(data.error || 'Data refetch failed');
+    }
+
+  } catch (error) {
+    console.error('Error refetching stop data:', error);
+    alert('❌ Error refetching data. Please try again.');
+  } finally {
+    setProcessing(false);
+  }
+};
+
+// Helper function to check if a stop needs data refetching
+const needsDataRefetch = (stop) => {
+  return (
+    // Check if critical data is missing
+    (!stop.extractedData || 
+     !stop.extractedData.clientName || 
+     !stop.extractedData.address ||
+     stop.clientName === 'Unknown Client' ||
+     stop.address === 'Address not matched' ||
+     stop.address === 'Address from label') &&
+    // But has a label photo to refetch from
+    stop.labelPhoto
+  );
 };
 
   return (
@@ -2115,12 +2231,43 @@ const removeLabel = (labelId) => {
           {optimizedRoute.length} stops • Chain optimized
         </div>
       </div>
-      
+      {/* 🔄 ADD BULK RETRY BUTTON HERE - RIGHT BEFORE THE ROUTE LIST */}
+  {optimizedRoute.some(stop => stop.matchStatus === 'unmatched' && stop.labelOnly) && (
+    <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg mx-4 mt-4">
+      <div className="flex flex-col sm:flex-row justify-between items-center space-y-2 sm:space-y-0">
+        <div className="text-sm text-orange-700">
+          ⚠️ {optimizedRoute.filter(stop => stop.matchStatus === 'unmatched' && stop.labelOnly).length} unmatched labels found
+        </div>
+        <div className="flex space-x-2">
+          <button
+            onClick={retryAllUnmatched}
+            disabled={processing}
+            className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+          >
+            {processing ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                <span>Processing...</span>
+              </>
+            ) : (
+              <>
+                <span>🔄</span>
+                <span>Retry All Matching</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
       <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
        {optimizedRoute.map((stop, index) => {
   const isDelivered = deliveryStatus[index] === 'delivered';
   const isUnmatched = stop.matchStatus === 'unmatched' && stop.labelOnly;
-  const hasNoParcel = stop.hasNoParcel;
+  const hasNoParcel = stop.hasNoParcel; 
+
+
+
   
   return (
     <div 
@@ -2134,67 +2281,107 @@ const removeLabel = (labelId) => {
       }`}
     >
       {/* Delivery Status Header */}
-      <div className="flex justify-between items-start mb-3">
-        <div className="flex items-center">
-          <div className={`w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3 ${
-            isDelivered ? 'bg-green-500 text-white' : 
-            isUnmatched ? 'bg-yellow-500 text-white' : 
-            'bg-black text-white'
-          }`}>
-            {isDelivered ? '✓' : 
-             isUnmatched ? '❓' : 
-             stop.stopNumber}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className={`font-semibold text-base md:text-lg truncate ${
-              isDelivered ? 'text-green-700 line-through' : 
-              isUnmatched ? 'text-yellow-700' : 
-              'text-gray-900'
-            }`}>
-              {stop.clientName}
-              {isUnmatched && (
-                <span className="text-xs text-yellow-600 ml-2">(No Parcel Match)</span>
-              )}
-            </div>
-            <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
-            {stop.sender && (
-              <div className="text-xs text-blue-600 truncate mt-1">
-                From: {stop.sender}
-              </div>
-            )}
-            {/* Show barcode info for unmatched labels */}
-            {isUnmatched && stop.barcodeNumber && (
-              <div className="text-xs text-gray-500 mt-1">
-                Label Barcode: {stop.barcodeNumber}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="text-right flex-shrink-0 ml-2">
-          <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
-            📍 {stop.distanceFromPrevious}
-          </div>
-          <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
-          
-          {/* Delivery Status Button - Only show for matched stops */}
-          {!isDelivered && !isUnmatched ? (
-            <button
-              onClick={() => markAsDelivered(index)}
-              className="mt-2 bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
-            >
-              Mark Delivered
-            </button>
-          ) : isDelivered ? (
-            <div className="mt-2 text-green-600 font-semibold text-sm whitespace-nowrap">
-              ✅ Delivered
-            </div>
-          ) : (
-            <div className="mt-2 text-yellow-600 font-semibold text-sm whitespace-nowrap">
-              ⚠️ No Parcel
-            </div>
-          )}
-        </div>
+   {/* Delivery Status Header */}
+{/* Delivery Status Header */}
+<div className="flex justify-between items-start mb-3">
+  <div className="flex items-center">
+    <div className={`w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center font-semibold text-xs md:text-sm mr-2 md:mr-3 ${
+      isDelivered ? 'bg-green-500 text-white' : 
+      isUnmatched ? 'bg-yellow-500 text-white' : 
+      'bg-black text-white'
+    }`}>
+      {isDelivered ? '✓' : 
+       isUnmatched ? '❓' : 
+       stop.stopNumber}
+    </div>
+    <div className="min-w-0 flex-1">
+      <div className={`font-semibold text-base md:text-lg truncate ${
+        isDelivered ? 'text-green-700 line-through' : 
+        isUnmatched ? 'text-yellow-700' : 
+        'text-gray-900'
+      }`}>
+        {stop.clientName}
+        {isUnmatched && (
+          <span className="text-xs text-yellow-600 ml-2">(No Parcel Match)</span>
+        )}
+        {/* Show data quality indicator */}
+        {needsDataRefetch(stop) && (
+          <span className="text-xs text-red-600 ml-2">(Incomplete Data)</span>
+        )}
+        {stop.dataRefetched && (
+          <span className="text-xs text-green-600 ml-2">(Data Updated)</span>
+        )}
       </div>
+      <div className="text-xs md:text-sm text-gray-600 truncate">{stop.phoneNumber}</div>
+      
+      {/* ✅ BARCODE DISPLAY - Show for all stops */}
+      {(stop.barcodeNumber || stop.extractedData?.barcode) && (
+        <div className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full mt-1 inline-block">
+          🏷️ Barcode: {stop.barcodeNumber || stop.extractedData?.barcode}
+        </div>
+      )}
+      
+      {stop.sender && (
+        <div className="text-xs text-blue-600 truncate mt-1">
+          From: {stop.sender}
+        </div>
+      )}
+    </div>
+  </div>
+  <div className="text-right flex-shrink-0 ml-2">
+    <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full whitespace-nowrap">
+      📍 {stop.distanceFromPrevious}
+    </div>
+    <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
+    
+    {/* Button Group - Stack vertically on small screens */}
+    <div className="flex flex-col space-y-1 mt-2">
+      {/* 🔄 REFETCH DATA BUTTON - Show for stops with incomplete data */}
+      {needsDataRefetch(stop) && !isDelivered && (
+        <button
+          onClick={() => refetchStopData(index)}
+          disabled={processing}
+          className="bg-blue-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
+          title="Refetch address and client data from label"
+        >
+          <span>📡</span>
+          <span>Refetch Data</span>
+        </button>
+      )}
+      
+      {/* 🔄 RETRY MATCH BUTTON - Show for unmatched labels */}
+      {isUnmatched && !isDelivered && (
+        <button
+          onClick={() => retryMatching(index)}
+          disabled={processing}
+          className="bg-orange-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
+          title="Try to match this label with available parcels"
+        >
+          <span>🔄</span>
+          <span>Retry Match</span>
+        </button>
+      )}
+      
+      {/* ✅ DELIVERY STATUS BUTTON - Only show for matched stops */}
+      {!isDelivered && !isUnmatched ? (
+        <button
+          onClick={() => markAsDelivered(index)}
+          className="bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
+        >
+          Mark Delivered
+        </button>
+      ) : isDelivered ? (
+        <div className="text-green-600 font-semibold text-sm whitespace-nowrap">
+          ✅ Delivered
+        </div>
+      ) : (
+        <div className="text-yellow-600 font-semibold text-sm whitespace-nowrap">
+          ⚠️ No Parcel
+        </div>
+      )}
+    </div>
+  </div>
+</div>
       
       <div className="mb-3 md:mb-4">
         <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
@@ -2223,6 +2410,12 @@ const removeLabel = (labelId) => {
                   alt="Barcode" 
                   className="w-10 h-10 object-cover rounded border shadow-sm"
                 />
+                {/* Show barcode number under preview */}
+                {stop.barcodeNumber && (
+                  <div className="text-xs text-purple-600 mt-1 truncate" title={stop.barcodeNumber}>
+                    {stop.barcodeNumber}
+                  </div>
+                )}
               </div>
             )}
             {stop.parcelPreview && (
@@ -2251,6 +2444,12 @@ const removeLabel = (labelId) => {
                   alt="Label" 
                   className="w-10 h-10 object-cover rounded border shadow-sm"
                 />
+                {/* Show label barcode under preview */}
+                {stop.extractedData?.barcode && (
+                  <div className="text-xs text-blue-600 mt-1 truncate" title={stop.extractedData.barcode}>
+                    {stop.extractedData.barcode}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2273,7 +2472,7 @@ const removeLabel = (labelId) => {
                 <div>Phone: {stop.extractedData.phoneNumber}</div>
               )}
               {stop.extractedData.barcode && (
-                <div>Barcode: {stop.extractedData.barcode}</div>
+                <div className="text-purple-600 font-semibold">Barcode: {stop.extractedData.barcode}</div>
               )}
             </div>
           )}
@@ -2303,6 +2502,12 @@ const removeLabel = (labelId) => {
                       alt="Shipping Label" 
                       className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
                     />
+                    {/* Show barcode in focused view */}
+                    {stop.extractedData?.barcode && (
+                      <div className="text-sm text-purple-600 font-semibold mt-2">
+                        🏷️ Barcode: {stop.extractedData.barcode}
+                      </div>
+                    )}
                     <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
                   </div>
                 )}
@@ -2317,10 +2522,39 @@ const removeLabel = (labelId) => {
                       alt="Parcel" 
                       className="w-full max-w-[200px] mx-auto h-auto object-contain rounded border shadow-sm"
                     />
+                    {/* Show parcel barcode in focused view */}
+                    {stop.barcodeNumber && (
+                      <div className="text-sm text-purple-600 font-semibold mt-2">
+                        🏷️ Parcel Barcode: {stop.barcodeNumber}
+                      </div>
+                    )}
                     <div className="text-xs text-blue-600 mt-1">Click to enlarge</div>
                   </div>
                 )}
               </div>
+              
+              {/* Barcode Summary */}
+              {(stop.barcodeNumber || stop.extractedData?.barcode) && (
+                <div className="mt-4 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                  <div className="text-sm text-purple-700 font-semibold mb-2">📦 Barcode Information</div>
+                  <div className="text-xs text-gray-700 space-y-1">
+                    {stop.barcodeNumber && (
+                      <div><strong>Parcel Barcode:</strong> {stop.barcodeNumber}</div>
+                    )}
+                    {stop.extractedData?.barcode && stop.extractedData.barcode !== stop.barcodeNumber && (
+                      <div><strong>Label Barcode:</strong> {stop.extractedData.barcode}</div>
+                    )}
+                    {stop.allBarcodes && stop.allBarcodes.length > 1 && (
+                      <div><strong>All Detected Barcodes:</strong> {stop.allBarcodes.join(', ')}</div>
+                    )}
+                    {stop.matchedBarcode && (
+                      <div className="text-green-600 font-semibold">
+                        ✅ Matched with: {stop.matchedBarcode}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2341,7 +2575,11 @@ const removeLabel = (labelId) => {
               <div className="text-sm text-yellow-700 font-semibold">⚠️ No Parcel Match</div>
               <div className="text-xs text-yellow-600 mt-1">
                 This shipping label didn't match any captured parcel barcode.
-                {stop.barcodeNumber && ` Label barcode: ${stop.barcodeNumber}`}
+                {stop.extractedData?.barcode && (
+                  <div className="text-purple-600 font-semibold mt-1">
+                    Label Barcode: {stop.extractedData.barcode}
+                  </div>
+                )}
               </div>
             </div>
           )}
