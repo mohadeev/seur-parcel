@@ -5,14 +5,13 @@ import { useEffect, useRef, useState } from 'react';
 const RouteMap = ({ stops, onFocusChange }) => {
   const mapRef = useRef(null);
   const [map, setMap] = useState(null);
-  const [directionsService, setDirectionsService] = useState(null);
-  const [directionsRenderer, setDirectionsRenderer] = useState(null);
   const [markers, setMarkers] = useState([]);
   const [focusedSegment, setFocusedSegment] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [userMarker, setUserMarker] = useState(null);
   const [locationError, setLocationError] = useState(null);
   const [isRequestingLocation, setIsRequestingLocation] = useState(false);
+  const [routePolyline, setRoutePolyline] = useState(null);
 
   // Get user's current location with explicit permission request
   const requestLocationPermission = () => {
@@ -113,24 +112,10 @@ const RouteMap = ({ stops, onFocusChange }) => {
         ]
       });
 
-      // Initialize directions service and renderer
-      const directionsServiceInstance = new google.maps.DirectionsService();
-      const directionsRendererInstance = new google.maps.DirectionsRenderer({
-        map: mapInstance,
-        suppressMarkers: true,
-        polylineOptions: {
-          strokeColor: '#10B981',
-          strokeWeight: 5,
-          strokeOpacity: 0.8
-        }
-      });
-
       setMap(mapInstance);
-      setDirectionsService(directionsServiceInstance);
-      setDirectionsRenderer(directionsRendererInstance);
 
-      // Draw the route
-      drawRoute(mapInstance, directionsServiceInstance, directionsRendererInstance, stops);
+      // Draw the route using straight lines (no Directions API)
+      drawStraightLineRoute(mapInstance, stops);
 
       // Add custom markers
       addCustomMarkers(mapInstance, stops);
@@ -142,18 +127,45 @@ const RouteMap = ({ stops, onFocusChange }) => {
 
       // Cleanup function
       return () => {
-        if (directionsRendererInstance) {
-          directionsRendererInstance.setMap(null);
-        }
         markers.forEach(marker => marker.setMap(null));
         if (userMarker) {
           userMarker.setMap(null);
+        }
+        if (routePolyline) {
+          routePolyline.setMap(null);
         }
       };
     };
 
     initMap();
   }, [stops, userLocation]);
+
+  // Draw route using straight lines (no Directions API needed)
+  const drawStraightLineRoute = (mapInstance, stops) => {
+    if (stops.length < 2) return;
+
+    const google = window.google;
+    
+    // Create a polyline connecting all stops in order
+    const routePath = new google.maps.Polyline({
+      path: stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
+      geodesic: true,
+      strokeColor: '#10B981',
+      strokeOpacity: 0.8,
+      strokeWeight: 5
+    });
+
+    routePath.setMap(mapInstance);
+    setRoutePolyline(routePath);
+
+    // Fit map to show all stops
+    const bounds = new google.maps.LatLngBounds();
+    stops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
+    if (userLocation) {
+      bounds.extend(new google.maps.LatLng(userLocation.lat, userLocation.lng));
+    }
+    mapInstance.fitBounds(bounds, { padding: 50 });
+  };
 
   // Add user location marker with GPS accuracy
   const addUserLocationMarker = (mapInstance, location) => {
@@ -239,56 +251,7 @@ const RouteMap = ({ stops, onFocusChange }) => {
     return userLocationMarker;
   };
 
-  // Draw route using Google Directions API
-  const drawRoute = (mapInstance, directionsService, directionsRenderer, stops) => {
-    if (stops.length < 2) return;
-
-    const waypoints = stops.slice(1, -1).map(stop => ({
-      location: { lat: stop.lat, lng: stop.lng },
-      stopover: true
-    }));
-
-    const request = {
-      origin: { lat: stops[0].lat, lng: stops[0].lng },
-      destination: { lat: stops[stops.length - 1].lat, lng: stops[stops.length - 1].lng },
-      waypoints: waypoints,
-      travelMode: google.maps.TravelMode.DRIVING,
-      optimizeWaypoints: true
-    };
-
-    directionsService.route(request, (result, status) => {
-      if (status === google.maps.DirectionsStatus.OK) {
-        directionsRenderer.setDirections(result);
-        
-        // Fit map to show entire route + user location if available
-        const bounds = new google.maps.LatLngBounds();
-        
-        // Add route bounds
-        result.routes[0].legs.forEach(leg => {
-          bounds.extend(leg.start_location);
-          bounds.extend(leg.end_location);
-        });
-        
-        // Add user location to bounds if available
-        if (userLocation) {
-          bounds.extend(new google.maps.LatLng(userLocation.lat, userLocation.lng));
-        }
-        
-        mapInstance.fitBounds(bounds, { padding: 50 });
-      } else {
-        console.error('Error drawing route:', status);
-        // Fallback: just show markers without route
-        const bounds = new google.maps.LatLngBounds();
-        stops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
-        if (userLocation) {
-          bounds.extend(new google.maps.LatLng(userLocation.lat, userLocation.lng));
-        }
-        mapInstance.fitBounds(bounds, { padding: 50 });
-      }
-    });
-  };
-
-  // Add custom markers (keep your existing function)
+  // Add custom markers
   const addCustomMarkers = (mapInstance, stops) => {
     const google = window.google;
     const newMarkers = [];
@@ -337,7 +300,7 @@ const RouteMap = ({ stops, onFocusChange }) => {
     setMarkers(newMarkers);
   };
 
-  // Create info window content (keep your existing function)
+  // Create info window content
   const createInfoWindowContent = (stop) => {
     if (stop.type === 'depot') {
       return `
@@ -360,11 +323,6 @@ const RouteMap = ({ stops, onFocusChange }) => {
     }
   };
 
-  // Refresh location function
-  const refreshLocation = () => {
-    requestLocationPermission();
-  };
-
   return (
     <div className="relative h-full w-full">
       <div 
@@ -376,77 +334,11 @@ const RouteMap = ({ stops, onFocusChange }) => {
           borderRadius: '8px'
         }} 
       />
-      
-      {/* Location control panel */}
-      <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-4 max-w-xs">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-gray-800">Your Location</h3>
-          <button
-            onClick={refreshLocation}
-            disabled={isRequestingLocation}
-            className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isRequestingLocation ? '🔄' : '↻'}
-          </button>
-        </div>
-        
-        {isRequestingLocation && (
-          <div className="flex items-center space-x-2 mb-2">
-            <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
-            <span className="text-xs text-blue-600">Requesting GPS location...</span>
-          </div>
-        )}
-        
-        {userLocation && !isRequestingLocation && (
-          <div className="space-y-1">
-            <div className="flex items-center space-x-2">
-              <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-              <span className="text-xs font-medium text-gray-700">GPS Location Active</span>
-            </div>
-            <div className="text-xs text-gray-600">
-              <div>Lat: {userLocation.lat.toFixed(6)}</div>
-              <div>Lng: {userLocation.lng.toFixed(6)}</div>
-              {userLocation.accuracy && (
-                <div>Accuracy: ±{userLocation.accuracy.toFixed(0)}m</div>
-              )}
-            </div>
-          </div>
-        )}
-        
-        {locationError && !isRequestingLocation && (
-          <div className="space-y-2">
-            <div className="flex items-center space-x-2">
-              <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-              <span className="text-xs font-medium text-red-600">Location Error</span>
-            </div>
-            <p className="text-xs text-red-500">{locationError}</p>
-            <button
-              onClick={requestLocationPermission}
-              className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 w-full"
-            >
-              Try Again
-            </button>
-          </div>
-        )}
-        
-        {!userLocation && !locationError && !isRequestingLocation && (
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
-            <span className="text-xs text-gray-500">Click to enable location</span>
-            <button
-              onClick={requestLocationPermission}
-              className="text-xs bg-gray-500 text-white px-2 py-1 rounded hover:bg-gray-600 ml-auto"
-            >
-              Enable
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   );
 };
 
-// Load Google Maps script (keep your existing wrapper)
+// Load Google Maps script
 const GoogleMapsWrapper = (props) => {
   const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
 
@@ -457,7 +349,7 @@ const GoogleMapsWrapper = (props) => {
     }
 
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=geometry,places`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=geometry`;
     script.async = true;
     script.defer = true;
     script.onload = () => setGoogleMapsLoaded(true);
