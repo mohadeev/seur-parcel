@@ -180,6 +180,8 @@ const [currentStep, setCurrentStep] = useState('parcel-capture');
   const [savedRoutes, setSavedRoutes] = useState([]);
   const [showRoutesList, setShowRoutesList] = useState(false);
   const [deliveryStatus, setDeliveryStatus] = useState({});
+  const [editingStop, setEditingStop] = useState(null);
+const [editedAddress, setEditedAddress] = useState('');
 
   const [capturedPhotos, setCapturedPhotos] = useState([]);
 const [currentOrderPhotos, setCurrentOrderPhotos] = useState({ 
@@ -340,6 +342,84 @@ const handlePhotoClick = (stop) => {
     labelPhoto: stop.labelPhoto || stop.labelPreview,
     extractedData: stop.extractedData
   });
+};
+// Open Google Maps with directions from current location to stop
+const handleGoogleMapsDirections = async (stop, stopIndex, event) => {
+  event.stopPropagation();
+  
+  try {
+    // Get user's current location first
+    setIsGettingLocation(true);
+    setLocationError(null);
+
+    const getUserLocation = () => {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('Geolocation is not supported by your browser'));
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            resolve({
+              lat: position.coords.latitude,
+              lng: position.coords.longitude
+            });
+          },
+          (error) => {
+            let errorMessage = 'Unable to get your location';
+            switch (error.code) {
+              case error.PERMISSION_DENIED:
+                errorMessage = 'Location access denied. Please allow location access to get directions.';
+                break;
+              case error.POSITION_UNAVAILABLE:
+                errorMessage = 'Location information unavailable.';
+                break;
+              case error.TIMEOUT:
+                errorMessage = 'Location request timed out.';
+                break;
+              default:
+                errorMessage = 'An unknown error occurred.';
+                break;
+            }
+            reject(new Error(errorMessage));
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 60000
+          }
+        );
+      });
+    };
+
+    // Get current location
+    const userLocation = await getUserLocation();
+    
+    // Encode coordinates for Google Maps
+    const origin = `${userLocation.lat},${userLocation.lng}`;
+    const destination = encodeURIComponent(stop.address);
+    
+    // Create Google Maps URL with directions
+    const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
+    
+    // Open in new tab
+    window.open(googleMapsUrl, '_blank');
+    
+    setIsGettingLocation(false);
+    
+  } catch (error) {
+    console.error('Error getting location for directions:', error);
+    setLocationError(error.message);
+    setIsGettingLocation(false);
+    
+    // Fallback: Open Google Maps with just the destination (no origin)
+    const destination = encodeURIComponent(stop.address);
+    const fallbackUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+    window.open(fallbackUrl, '_blank');
+    
+    alert('Using destination only. Please allow location access for better directions.');
+  }
 };
 
 // Close modal
@@ -559,6 +639,7 @@ const loadRoute = async (routeId) => {
 
 // Mark stop as delivered
 // Mark stop as delivered - FIXED to properly find and save route
+// Mark stop as delivered - SIMPLE VERSION (just change status)
 const markAsDelivered = async (stopIndex) => {
   const newStatus = {
     ...deliveryStatus,
@@ -567,7 +648,7 @@ const markAsDelivered = async (stopIndex) => {
   
   setDeliveryStatus(newStatus);
   
-  // ✅ Save to IndexedDB - FIXED LOGIC
+  // ✅ Save to IndexedDB
   if (dbReady && optimizedRoute.length > 0) {
     try {
       console.log('🔄 Saving delivery status...');
@@ -575,20 +656,16 @@ const markAsDelivered = async (stopIndex) => {
       // Get ALL routes to find the current one
       const allRoutes = await seurDB.getAllRoutes();
       
-      // Find the current route - try multiple methods
+      // Find the current route
       let currentRoute = null;
       
       if (routeId) {
-        // If we have a route ID, use that
         currentRoute = allRoutes.find(route => route.id === parseInt(routeId));
       } else {
-        // If no route ID, find the most recent route with optimized data
         currentRoute = allRoutes
           .filter(route => route.optimizedRoute && route.optimizedRoute.length > 0)
           .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
       }
-      
-      console.log('🎯 Current route to update:', currentRoute);
       
       if (currentRoute) {
         // Update the route with new delivery status
@@ -604,8 +681,6 @@ const markAsDelivered = async (stopIndex) => {
         // Update the saved routes list
         const updatedRoutes = await seurDB.getAllRoutes();
         setSavedRoutes(updatedRoutes);
-      } else {
-        console.log('❌ No current route found to update');
       }
     } catch (error) {
       console.error('❌ Error saving delivery status:', error);
@@ -614,6 +689,193 @@ const markAsDelivered = async (stopIndex) => {
   
   const stop = optimizedRoute[stopIndex];
   console.log(`✅ Marked as delivered: ${stop.clientName}`);
+}; 
+// Start editing address for a stop
+const startEditingAddress = (stopIndex) => {
+  setEditingStop(stopIndex);
+  setEditedAddress(optimizedRoute[stopIndex].address);
+};
+
+// Cancel editing
+const cancelEditing = () => {
+  setEditingStop(null);
+  setEditedAddress('');
+};
+
+// Save edited address and re-geocode
+const saveEditedAddress = async (stopIndex) => {
+  if (!editedAddress.trim()) {
+    alert('Please enter a valid address');
+    return;
+  }
+
+  setProcessing(true);
+  
+  try {
+    // Update the stop with new address
+    const updatedRoute = [...optimizedRoute];
+    updatedRoute[stopIndex] = {
+      ...updatedRoute[stopIndex],
+      address: editedAddress.trim(),
+      lat: null, // Clear coordinates to force re-geocoding
+      lng: null,
+      placeName: null
+    };
+
+    setOptimizedRoute(updatedRoute);
+    setEditingStop(null);
+    setEditedAddress('');
+
+    // Re-geocode just this address
+    const geocodedStop = await geocodeSingleAddress(updatedRoute[stopIndex]);
+    
+    if (geocodedStop.lat && geocodedStop.lng) {
+      // Update the route with new coordinates
+      const finalUpdatedRoute = [...updatedRoute];
+      finalUpdatedRoute[stopIndex] = geocodedStop;
+      setOptimizedRoute(finalUpdatedRoute);
+      
+      // Re-optimize the entire route with the new position
+      await reoptimizeRoute(finalUpdatedRoute);
+      
+      alert(`✅ Address updated and route re-optimized!`);
+    } else {
+      alert('❌ Could not geocode the new address. Please check the address and try again.');
+    }
+
+  } catch (error) {
+    console.error('Error updating address:', error);
+    alert('❌ Error updating address. Please try again.');
+  } finally {
+    setProcessing(false);
+  }
+};
+
+// Geocode single address
+// Geocode single address
+const geocodeSingleAddress = async (delivery) => {
+  try {
+    // Create clean version without images
+    const cleanDelivery = {
+      clientName: delivery.clientName,
+      address: delivery.address,
+      phoneNumber: delivery.phoneNumber,
+      barcode: delivery.barcode,
+      sender: delivery.sender,
+      weight: delivery.weight,
+      source: delivery.source,
+      photoSetId: delivery.photoSetId,
+    };
+
+    const response = await fetch(SERVER_URL+'/api/geocode-addresses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        addresses: [cleanDelivery], // Send only one address without images
+        depot: seurDepot
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+ 
+    if (data.success && data.deliveries.length > 0) {
+      const geocodedDelivery = data.deliveries[0];
+      
+      // Validate coordinates before returning
+      const isValidCoord = geocodedDelivery.lat && 
+                          geocodedDelivery.lng && 
+                          !isNaN(geocodedDelivery.lat) && 
+                          !isNaN(geocodedDelivery.lng);
+      
+      if (isValidCoord) {
+        return {
+          ...delivery,
+          lat: geocodedDelivery.lat,
+          lng: geocodedDelivery.lng,
+          placeName: geocodedDelivery.placeName
+        };
+      } else {
+        throw new Error('Invalid coordinates received from geocoding');
+      }
+    } else {
+      throw new Error('Geocoding failed');
+    }
+  } catch (error) {
+    console.error('Geocoding error:', error);
+    return delivery;
+  }
+};
+
+// Re-optimize the entire route
+const reoptimizeRoute = async (deliveriesWithCoords) => {
+  const validDeliveries = deliveriesWithCoords.filter(d => d.lat && d.lng);
+  
+  if (validDeliveries.length === 0) return;
+
+  try {
+    // Create clean version for optimization
+    const cleanDeliveriesForOptimization = validDeliveries.map(delivery => ({
+      clientName: delivery.clientName,
+      address: delivery.address,
+      phoneNumber: delivery.phoneNumber,
+      barcode: delivery.barcode,
+      sender: delivery.sender,
+      weight: delivery.weight,
+      source: delivery.source,
+      photoSetId: delivery.photoSetId,
+      lat: delivery.lat,
+      lng: delivery.lng,
+      placeName: delivery.placeName,
+    }));
+
+    const response = await fetch(SERVER_URL+'/api/optimize-route', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        deliveries: cleanDeliveriesForOptimization,
+        depot: seurDepot
+      }),
+    });
+
+    const data = await response.json();
+    
+    if (data.success) {
+      // Recombine optimized data with ALL image data
+      const routeWithPhotos = data.route.map((optimizedStop, index) => {
+        const originalDeliveryWithPhotos = validDeliveries.find(d => 
+          d.photoSetId === optimizedStop.photoSetId
+        ) || validDeliveries[index];
+        
+        return {
+          ...optimizedStop,
+          barcodePhoto: originalDeliveryWithPhotos?.barcodePhoto,
+          barcodePreview: originalDeliveryWithPhotos?.barcodePreview,
+          parcelPhoto: originalDeliveryWithPhotos?.parcelPhoto,
+          parcelPreview: originalDeliveryWithPhotos?.parcelPreview,
+          labelPhoto: originalDeliveryWithPhotos?.labelPhoto,
+          labelPreview: originalDeliveryWithPhotos?.labelPreview,
+          originalPhotos: originalDeliveryWithPhotos?.originalPhotos,
+          extractedData: originalDeliveryWithPhotos?.extractedData,
+          photoSetId: originalDeliveryWithPhotos?.photoSetId,
+          allBarcodes: originalDeliveryWithPhotos?.allBarcodes,
+          matchedBarcode: originalDeliveryWithPhotos?.matchedBarcode
+        };
+      });
+      
+      setOptimizedRoute(routeWithPhotos);
+      console.log('✅ Route re-optimized with new address!');
+    }
+  } catch (error) {
+    console.error('Re-optimization error:', error);
+  }
 };
 
 // Preserve state when we have optimized route but no route ID
@@ -876,9 +1138,10 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       weight: delivery.weight,
       source: delivery.source,
       photoSetId: delivery.photoSetId,
+      // NO IMAGE DATA - this is what's causing the payload too large error
     }));
 
-    console.log("Sending clean deliveries for geocoding:", cleanDeliveriesForGeocoding.length);
+    console.log("Sending clean deliveries for geocoding (NO IMAGES):", cleanDeliveriesForGeocoding.length);
     
     const response = await fetch(SERVER_URL+'/api/geocode-addresses', {
       method: 'POST',
@@ -891,6 +1154,10 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       }),
     });
 
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
     const data = await response.json();
     
     if (data.success) {
@@ -898,15 +1165,11 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       const deliveriesWithPhotos = data.deliveries.map((geocodedDelivery, index) => {
         const originalDelivery = deliveriesToGeocode[index];
         
-        console.log("🔍 Restoring ALL images for:", originalDelivery.clientName, {
-          hasBarcodePhoto: !!originalDelivery.barcodePhoto,
-          hasParcelPhoto: !!originalDelivery.parcelPhoto,
-          hasLabelPhoto: !!originalDelivery.labelPhoto
-        });
+        console.log("🔍 Restoring ALL images for:", originalDelivery.clientName);
         
         return {
           ...geocodedDelivery, // Geocoded data from server
-          // ✅ RESTORE ALL IMAGE DATA
+          // ✅ RESTORE ALL IMAGE DATA (but don't send to server)
           barcodePhoto: originalDelivery.barcodePhoto,
           barcodePreview: originalDelivery.barcodePreview,
           parcelPhoto: originalDelivery.parcelPhoto, 
@@ -927,12 +1190,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
       const successfulGeocodes = deliveriesWithPhotos.filter(d => d.lat && d.lng).length;
       const photosCount = deliveriesWithPhotos.filter(d => d.labelPhoto).length;
       
-      console.log("✅ Final geocoded deliveries with images:", deliveriesWithPhotos.map(d => ({
-        clientName: d.clientName,
-        hasBarcodePhoto: !!d.barcodePhoto,
-        hasParcelPhoto: !!d.parcelPhoto,
-        hasLabelPhoto: !!d.labelPhoto
-      })));
+      console.log("✅ Final geocoded deliveries with images restored");
       
       alert(`✅ Geocoded ${successfulGeocodes}/${deliveriesWithPhotos.length} addresses! ${photosCount} stops have photos. Now optimizing route...`);
       
@@ -942,6 +1200,7 @@ const geocodeAddresses = async (deliveriesToGeocode) => {
     }
     
   } catch (error) {
+    console.error('Geocoding error:', error);
     alert('Geocoding error: ' + error.message);
   } finally {
     setProcessing(false);
@@ -2260,8 +2519,19 @@ const needsDataRefetch = (stop) => {
       </div>
     </div>
   )}
-      <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
-       {optimizedRoute.map((stop, index) => {
+     <div className="max-h-[50vh] md:max-h-[600px] overflow-y-auto">
+  {optimizedRoute
+    .map((stop, index) => ({ stop, index }))
+    .sort((a, b) => {
+      // Sort: delivered orders go to bottom, active orders stay in original order
+      const aDelivered = deliveryStatus[a.index] === 'delivered';
+      const bDelivered = deliveryStatus[b.index] === 'delivered';
+      
+      if (aDelivered && !bDelivered) return 1; // a (delivered) goes after b (active)
+      if (!aDelivered && bDelivered) return -1; // a (active) goes before b (delivered)
+      return a.index - b.index; // Keep original order for same status
+    })
+    .map(({ stop, index }) => {
   const isDelivered = deliveryStatus[index] === 'delivered';
   const isUnmatched = stop.matchStatus === 'unmatched' && stop.labelOnly;
   const hasNoParcel = stop.hasNoParcel; 
@@ -2335,62 +2605,143 @@ const needsDataRefetch = (stop) => {
     <div className="text-xs text-gray-500 mt-1 whitespace-nowrap">{stop.driveTimeFromPrevious}</div>
     
     {/* Button Group - Stack vertically on small screens */}
-    <div className="flex flex-col space-y-1 mt-2">
-      {/* 🔄 REFETCH DATA BUTTON - Show for stops with incomplete data */}
-      {needsDataRefetch(stop) && !isDelivered && (
-        <button
-          onClick={() => refetchStopData(index)}
-          disabled={processing}
-          className="bg-blue-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
-          title="Refetch address and client data from label"
-        >
-          <span>📡</span>
-          <span>Refetch Data</span>
-        </button>
-      )}
-      
-      {/* 🔄 RETRY MATCH BUTTON - Show for unmatched labels */}
-      {isUnmatched && !isDelivered && (
-        <button
-          onClick={() => retryMatching(index)}
-          disabled={processing}
-          className="bg-orange-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
-          title="Try to match this label with available parcels"
-        >
-          <span>🔄</span>
-          <span>Retry Match</span>
-        </button>
-      )}
-      
-      {/* ✅ DELIVERY STATUS BUTTON - Only show for matched stops */}
-      {!isDelivered && !isUnmatched ? (
-        <button
-          onClick={() => markAsDelivered(index)}
-          className="bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
-        >
-          Mark Delivered
-        </button>
-      ) : isDelivered ? (
-        <div className="text-green-600 font-semibold text-sm whitespace-nowrap">
-          ✅ Delivered
-        </div>
-      ) : (
-        <div className="text-yellow-600 font-semibold text-sm whitespace-nowrap">
-          ⚠️ No Parcel
-        </div>
-      )}
+{/* Button Group - Stack vertically on small screens */}
+<div className="flex flex-col space-y-1 mt-2">
+  {/* 🗺️ GOOGLE MAPS DIRECTIONS BUTTON - Show for all stops */}
+  {!isDelivered && (
+    <button
+      onClick={(e) => handleGoogleMapsDirections(stop, index, e)}
+      className="bg-blue-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-blue-600 transition-colors flex items-center space-x-1 whitespace-nowrap"
+      title="Open Google Maps directions to this stop"
+    >
+      <span>🗺️</span>
+      <span>Directions</span>
+    </button>
+  )}
+  
+  {/* ✏️ EDIT ADDRESS BUTTON - Show for all active stops */}
+  {!isDelivered && (
+    <button
+      onClick={() => startEditingAddress(index)}
+      disabled={processing || editingStop !== null}
+      className="bg-purple-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
+      title="Edit delivery address"
+    >
+      <span>✏️</span>
+      <span>Edit Address</span>
+    </button>
+  )}
+  
+  {/* 🔄 REFETCH DATA BUTTON - Show for stops with incomplete data */}
+  {needsDataRefetch(stop) && !isDelivered && (
+    <button
+      onClick={() => refetchStopData(index)}
+      disabled={processing}
+      className="bg-blue-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
+      title="Refetch address and client data from label"
+    >
+      <span>📡</span>
+      <span>Refetch Data</span>
+    </button>
+  )}
+  
+  {/* 🔄 RETRY MATCH BUTTON - Show for unmatched labels */}
+  {isUnmatched && !isDelivered && (
+    <button
+      onClick={() => retryMatching(index)}
+      disabled={processing}
+      className="bg-orange-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1 whitespace-nowrap"
+      title="Try to match this label with available parcels"
+    >
+      <span>🔄</span>
+      <span>Retry Match</span>
+    </button>
+  )}
+  
+  {/* ✅ DELIVERY STATUS BUTTON - Only show for matched stops */}
+  {!isDelivered && !isUnmatched ? (
+    <button
+      onClick={() => markAsDelivered(index)}
+      className="bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors whitespace-nowrap"
+    >
+      Mark Delivered
+    </button>
+  ) : isDelivered ? (
+    <div className="text-green-600 font-semibold text-sm whitespace-nowrap">
+      ✅ Delivered
     </div>
+  ) : (
+    <div className="text-yellow-600 font-semibold text-sm whitespace-nowrap">
+      ⚠️ No Parcel
+    </div>
+  )}
+</div>
   </div>
 </div>
       
-      <div className="mb-3 md:mb-4">
-        <div className="text-xs md:text-sm text-gray-600 mb-1">Address</div>
-        <div className={`text-gray-900 text-sm md:text-base break-words ${
-          isDelivered ? 'line-through' : ''
-        }`}>
-          {stop.address}
-        </div>
+     {/* Address Section - Editable */}
+<div className="mb-3 md:mb-4">
+  <div className="text-xs md:text-sm text-gray-600 mb-1 flex justify-between items-center">
+    <span>Address</span>
+    {!isDelivered && (
+      <button
+        onClick={() => startEditingAddress(index)}
+        className="text-blue-500 hover:text-blue-700 text-xs font-semibold flex items-center space-x-1"
+        title="Edit address"
+      >
+        <span>✏️</span>
+        <span>Edit</span>
+      </button>
+    )}
+  </div>
+  
+  {editingStop === index ? (
+    // Editing mode
+    <div className="space-y-2">
+      <textarea
+        value={editedAddress}
+        onChange={(e) => setEditedAddress(e.target.value)}
+        className="w-full p-2 border border-gray-300 rounded-lg text-sm text-gray-900 resize-none"
+        rows="3"
+        placeholder="Enter new address..."
+      />
+      <div className="flex space-x-2">
+        <button
+          onClick={() => saveEditedAddress(index)}
+          disabled={processing}
+          className="bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-green-600 transition-colors disabled:opacity-50 flex items-center space-x-1"
+        >
+          <span>💾</span>
+          <span>Save</span>
+        </button>
+        <button
+          onClick={cancelEditing}
+          className="bg-gray-500 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-gray-600 transition-colors flex items-center space-x-1"
+        >
+          <span>❌</span>
+          <span>Cancel</span>
+        </button>
       </div>
+    </div>
+  ) : (
+    // Display mode
+    <div className={`text-gray-900 text-sm md:text-base break-words ${
+      isDelivered ? 'line-through' : ''
+    }`}>
+      {stop.address}
+      {stop.placeName && stop.placeName !== stop.address && (
+        <div className="text-xs text-green-600 mt-1">
+          📍 {stop.placeName}
+        </div>
+      )}
+      {(!stop.lat || !stop.lng) && (
+        <div className="text-xs text-red-600 mt-1">
+          ⚠️ Could not geocode this address
+        </div>
+      )}
+    </div>
+  )}
+</div>
 
       {/* Photos section - Show label photo even for unmatched stops */}
       {(stop.barcodePreview || stop.parcelPreview || stop.labelPreview) && (

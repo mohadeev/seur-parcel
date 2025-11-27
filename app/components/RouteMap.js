@@ -13,7 +13,29 @@ const RouteMap = ({ stops, onFocusChange }) => {
   const [isRequestingLocation, setIsRequestingLocation] = useState(false);
   const [routePolyline, setRoutePolyline] = useState(null);
 
-  // Get user's current location with explicit permission request
+  // Validate coordinates
+  const isValidCoordinate = (lat, lng) => {
+    return lat !== null && 
+           lng !== null && 
+           !isNaN(lat) && 
+           !isNaN(lng) && 
+           typeof lat === 'number' && 
+           typeof lng === 'number' &&
+           lat >= -90 && lat <= 90 &&
+           lng >= -180 && lng <= 180;
+  };
+
+  // Filter valid stops with coordinates
+  const getValidStops = () => {
+    if (!stops || !Array.isArray(stops)) return [];
+    
+    return stops.filter(stop => 
+      stop && 
+      isValidCoordinate(stop.lat, stop.lng)
+    );
+  };
+
+  // Get user's current location with better error handling
   const requestLocationPermission = () => {
     if (typeof window === 'undefined') return;
 
@@ -41,10 +63,13 @@ const RouteMap = ({ stops, onFocusChange }) => {
         if (map && userLoc) {
           addUserLocationMarker(map, userLoc);
           // Re-fit map to include user location
-          const bounds = new google.maps.LatLngBounds();
-          stops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
-          bounds.extend(new google.maps.LatLng(userLoc.lat, userLoc.lng));
-          map.fitBounds(bounds, { padding: 50 });
+          const validStops = getValidStops();
+          if (validStops.length > 0) {
+            const bounds = new google.maps.LatLngBounds();
+            validStops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
+            bounds.extend(new google.maps.LatLng(userLoc.lat, userLoc.lng));
+            map.fitBounds(bounds, { padding: 50 });
+          }
         }
       },
       (error) => {
@@ -67,12 +92,12 @@ const RouteMap = ({ stops, onFocusChange }) => {
         }
         
         setLocationError(errorMessage);
-        console.error('Location error:', error);
+        console.error('Location error:', errorMessage);
       },
       {
-        enableHighAccuracy: true, // Use GPS if available
-        timeout: 15000, // 15 seconds timeout
-        maximumAge: 60000 // Accept cached position up to 1 minute old
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 60000
       }
     );
   };
@@ -84,13 +109,24 @@ const RouteMap = ({ stops, onFocusChange }) => {
 
   // Initialize Google Maps
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.google || !stops || stops.length === 0) return;
+    if (typeof window === 'undefined' || !window.google) return;
+
+    const validStops = getValidStops();
+    if (validStops.length === 0) {
+      console.warn('No valid stops with coordinates to display on map');
+      return;
+    }
 
     const initMap = () => {
       const google = window.google;
       
-      // Determine center based on user location or first stop
-      const center = userLocation || { lat: stops[0].lat, lng: stops[0].lng };
+      // Determine center based on user location or first valid stop
+      let center;
+      if (userLocation && isValidCoordinate(userLocation.lat, userLocation.lng)) {
+        center = userLocation;
+      } else {
+        center = { lat: validStops[0].lat, lng: validStops[0].lng };
+      }
       
       // Create map
       const mapInstance = new google.maps.Map(mapRef.current, {
@@ -115,13 +151,13 @@ const RouteMap = ({ stops, onFocusChange }) => {
       setMap(mapInstance);
 
       // Draw the route using straight lines (no Directions API)
-      drawStraightLineRoute(mapInstance, stops);
+      drawStraightLineRoute(mapInstance, validStops);
 
       // Add custom markers
-      addCustomMarkers(mapInstance, stops);
+      addCustomMarkers(mapInstance, validStops);
 
       // Add user location marker if available
-      if (userLocation) {
+      if (userLocation && isValidCoordinate(userLocation.lat, userLocation.lng)) {
         addUserLocationMarker(mapInstance, userLocation);
       }
 
@@ -142,13 +178,20 @@ const RouteMap = ({ stops, onFocusChange }) => {
 
   // Draw route using straight lines (no Directions API needed)
   const drawStraightLineRoute = (mapInstance, stops) => {
-    if (stops.length < 2) return;
+    const validStops = stops.filter(stop => 
+      isValidCoordinate(stop.lat, stop.lng)
+    );
+    
+    if (validStops.length < 2) {
+      console.warn('Not enough valid stops to draw route');
+      return;
+    }
 
     const google = window.google;
     
-    // Create a polyline connecting all stops in order
+    // Create a polyline connecting all valid stops in order
     const routePath = new google.maps.Polyline({
-      path: stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
+      path: validStops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
       geodesic: true,
       strokeColor: '#10B981',
       strokeOpacity: 0.8,
@@ -158,10 +201,10 @@ const RouteMap = ({ stops, onFocusChange }) => {
     routePath.setMap(mapInstance);
     setRoutePolyline(routePath);
 
-    // Fit map to show all stops
+    // Fit map to show all valid stops
     const bounds = new google.maps.LatLngBounds();
-    stops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
-    if (userLocation) {
+    validStops.forEach(stop => bounds.extend({ lat: stop.lat, lng: stop.lng }));
+    if (userLocation && isValidCoordinate(userLocation.lat, userLocation.lng)) {
       bounds.extend(new google.maps.LatLng(userLocation.lat, userLocation.lng));
     }
     mapInstance.fitBounds(bounds, { padding: 50 });
@@ -169,6 +212,11 @@ const RouteMap = ({ stops, onFocusChange }) => {
 
   // Add user location marker with GPS accuracy
   const addUserLocationMarker = (mapInstance, location) => {
+    if (!isValidCoordinate(location.lat, location.lng)) {
+      console.warn('Invalid user location coordinates:', location);
+      return;
+    }
+
     const google = window.google;
     
     // Clear existing user marker
@@ -181,14 +229,14 @@ const RouteMap = ({ stops, onFocusChange }) => {
       map: mapInstance,
       icon: {
         path: google.maps.SymbolPath.CIRCLE,
-        fillColor: '#3B82F6', // Blue color
+        fillColor: '#3B82F6',
         fillOpacity: 1,
         strokeColor: '#FFFFFF',
         strokeWeight: 3,
         scale: 10
       },
       title: `Your GPS Location\nLat: ${location.lat.toFixed(6)}\nLng: ${location.lng.toFixed(6)}\nAccuracy: ${location.accuracy ? location.accuracy.toFixed(0) + 'm' : 'Unknown'}`,
-      zIndex: 1000 // Ensure it appears above other markers
+      zIndex: 1000
     });
 
     // Add accuracy circle (only if accuracy data is available)
@@ -201,7 +249,7 @@ const RouteMap = ({ stops, onFocusChange }) => {
         fillOpacity: 0.2,
         map: mapInstance,
         center: location,
-        radius: location.accuracy, // Actual GPS accuracy radius
+        radius: location.accuracy,
         zIndex: 1
       });
     }
@@ -215,7 +263,7 @@ const RouteMap = ({ stops, onFocusChange }) => {
       fillOpacity: 0.1,
       map: mapInstance,
       center: location,
-      radius: 500, // 500m radius for visual effect
+      radius: 500,
       zIndex: 1
     });
 
@@ -257,6 +305,12 @@ const RouteMap = ({ stops, onFocusChange }) => {
     const newMarkers = [];
 
     stops.forEach((stop, index) => {
+      // Skip invalid coordinates
+      if (!isValidCoordinate(stop.lat, stop.lng)) {
+        console.warn('Skipping invalid stop coordinates:', stop);
+        return;
+      }
+
       let backgroundColor = '#000000';
       let textColor = '#FFFFFF';
       let labelText = stop.stopNumber?.toString() || (index + 1).toString();
@@ -323,6 +377,8 @@ const RouteMap = ({ stops, onFocusChange }) => {
     }
   };
 
+  const validStops = getValidStops();
+  
   return (
     <div className="relative h-full w-full">
       <div 
@@ -334,6 +390,13 @@ const RouteMap = ({ stops, onFocusChange }) => {
           borderRadius: '8px'
         }} 
       />
+      
+      {/* Show warning if some stops have invalid coordinates */}
+      {validStops.length < stops.length && (
+        <div className="absolute top-2 left-2 right-2 bg-yellow-50 border border-yellow-200 rounded-lg p-2 text-xs text-yellow-800">
+          ⚠️ {stops.length - validStops.length} stops have invalid coordinates and are not shown on the map
+        </div>
+      )}
     </div>
   );
 };
